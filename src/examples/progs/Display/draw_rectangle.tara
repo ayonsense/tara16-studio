@@ -1,0 +1,75 @@
+; ---------------------------------------------------------------------------
+; Draw a filled rectangle
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Display rectangle demo for the TARA memory-mapped display.
+; Display map:
+;   0x0600-0x07FF  framebuffer
+;   64x64 pixels, 1 bit per pixel, 8 horizontal pixels per byte
+;
+; Rectangle dimensions used here:
+;   length x = 32 pixels
+;   height y = 14 pixels
+;   top-left = (16, 8)
+;
+; This simple version writes whole framebuffer bytes, so x must be a multiple
+; of 8 pixels. To change the rectangle:
+;   width bytes = x / 8       ; update "LIL R3, 4"
+;   height rows = y           ; update "LIL R1, 14"
+;   start address = 0x0600 + top_y * 8 + top_x / 8
+;
+; It clears the screen, draws a filled rectangle, then halts so the image stays
+; visible.
+
+; ---- Clear framebuffer ---------------------------------------------
+        LIL  R0, 0
+        LIL  R6, 0
+        LIH  R6, 6          ; R6 = 0x0600 framebuffer start
+        LIL  R7, 0
+        LIH  R7, 8          ; R7 = 0x0800 framebuffer end
+
+clear_loop:
+        SUB  R5, R7, R6
+        BZ   R5, draw_setup
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        JMP  clear_loop
+
+; ---- Draw filled rectangle -----------------------------------------
+; Registers:
+;   R0 = color byte, 0xFF means eight on pixels
+;   R1 = remaining height rows
+;   R2 = current row start address
+;   R3 = width in framebuffer bytes
+;   R4 = remaining bytes in current row
+;   R5 = scratch
+;   R6 = draw pointer
+
+draw_setup:
+        LIL  R0, 255        ; eight 1-bit pixels, all on
+        LIL  R1, 14         ; height y = 14 pixels
+        LIL  R2, 66
+        LIH  R2, 6          ; R2 = 0x0642, top-left (16, 8)
+        LIL  R3, 4          ; length x = 32 pixels = 4 bytes
+
+row_loop:
+        MOV  R6, R2         ; draw pointer = current row start
+        MOV  R4, R3         ; draw R3 bytes on this row
+
+draw_row_loop:
+        BZ   R4, row_done
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        ADDI R4, -1
+        JMP  draw_row_loop
+
+row_done:
+        ADDI R2, 8          ; next display row, 8 bytes per 64-pixel row
+        ADDI R1, -1
+        BZ   R1, done
+        JMP  row_loop
+
+done:
+        HLT

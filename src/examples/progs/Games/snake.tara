@@ -1,0 +1,589 @@
+; ---------------------------------------------------------------------------
+; Snake game
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; ======================================================================
+; SNAKE  —  TARA Assembly demo  (CS2300, IIT Madras)
+; ======================================================================
+; A classic 1-pixel-wide snake. It glides a pixel at a time, eats food,
+; grows, and dies on hitting the boundary wall or its own body.
+;
+; ── Display ───────────────────────────────────────────────────────────
+;   64x64 pixels, 1 bit/pixel, at 0x0600-0x07FF (row-major, MSB first).
+;   Pixel (x,y):  addr = 0x0600 + y*8 + (x/8) ,  bit mask = 0x80 >> (x&7).
+;   Framebuffer row y=0 is drawn at the BOTTOM, so a larger y is higher up.
+;
+; ── Arena ─────────────────────────────────────────────────────────────
+;   A 2-pixel blank margin is left around the whole screen. Inside that,
+;   a 2-pixel-wide checkerboard brick wall is drawn at x/y = 2..3 and
+;   x/y = 60..61. Playfield = the interior pixels x,y in [4,59].
+;
+;   Collision uses the framebuffer itself as the occupancy map: before the
+;   head advances we test the destination pixel. If it is the food we eat;
+;   otherwise a lit pixel means a wall or the snake's own body -> GAME OVER.
+;
+; ── Keyboard  (live one-hot bits at 0x05FF) ───────────────────────────
+;   bit0 = UP     bit1 = DOWN     bit2 = LEFT     bit3 = RIGHT    bit4 = QUIT
+;   UP    -> y+1 (visually up)         DOWN  -> y-1
+;   LEFT  -> x-1                       RIGHT -> x+1
+;   180-degree reversals are ignored (classic snake rule).
+;   (The GUI writes the held arrow keys / WASD into 0x05FF; open the Display
+;    tab, click the canvas, then steer.)
+;
+; ── Food queue ────────────────────────────────────────────────────────
+;   Future food pixel positions are pre-seeded as (x,y) byte pairs from
+;   0x0500; a 0xFF marker means "wrap back to 0x0500". Edit to taste.
+;
+; ── Data layout ───────────────────────────────────────────────────────
+;   Scalars (R7 = 0x0410 base, signed word offsets):
+;     -16 head_x  -14 head_y  -12 dir_dx  -10 dir_dy   -8 length
+;      -6 head_idx -4 tail_idx -2 food_ptr  0 food_x   +2 food_y
+;      +4 new_x    +6 new_y    +8 eat_flag +10 grow_flag
+;   Bit-mask table  [0x80,0x40,..,0x01]   at 0x0420 (indexed by x&7).
+;   Body ring buffer (one packed word (y<<6)|x per segment, max 64)
+;                                          at 0x0440-0x047F... 0x04BF.
+;   Food queue (x,y byte pairs, 0xFF = wrap) at 0x0500.
+;
+; ── Tip ───────────────────────────────────────────────────────────────
+;   Open the Display tab; clock ~300-1000 Hz gives a smooth pace.
+; ======================================================================
+
+; ── Variable base ─────────────────────────────────────────────────────
+    LIL  R7, 0x10
+    LIH  R7, 0x04            ; R7 = 0x0410
+
+; ── Clear the whole display (512 bytes 0x0600-0x07FF) ─────────────────
+    LIL  R0, 0x00
+    LIH  R0, 0x06
+    LIL  R1, 0x00
+    LIH  R1, 0x02            ; 512 bytes
+    LIL  R2, 0
+clr_disp:
+    STB  R2, 0(R0)
+    ADDI R0, 1
+    ADDI R1, -1
+    BZ   R1, clr_disp_done
+    JMP  clr_disp
+clr_disp_done:
+
+; ── Build the bit-mask table at 0x0420: 0x80,0x40,...,0x01 ────────────
+    LIL  R0, 0x20
+    LIH  R0, 0x04            ; R0 = 0x0420
+    LIL  R2, 0x80
+    STB  R2, 0(R0)
+    LIL  R2, 0x40
+    STB  R2, 1(R0)
+    LIL  R2, 0x20
+    STB  R2, 2(R0)
+    LIL  R2, 0x10
+    STB  R2, 3(R0)
+    LIL  R2, 0x08
+    STB  R2, 4(R0)
+    LIL  R2, 0x04
+    STB  R2, 5(R0)
+    LIL  R2, 0x02
+    STB  R2, 6(R0)
+    LIL  R2, 0x01
+    STB  R2, 7(R0)
+
+; ── Draw the checkerboard brick wall, leaving a 2-pixel outer gap ──────
+    ; Side walls: rows y=4..59, left x=2..3 and right x=60..61.
+    LIL  R0, 0x20
+    LIH  R0, 0x06            ; 0x0620 (row 4, byte-col 0)
+    LIL  R1, 4               ; row counter
+wall_sides:
+    MOV  R4, R1
+    LIL  R5, 1
+    AND  R4, R4, R5
+    BZ   R4, wall_side_even
+
+wall_side_odd:
+    LIL  R2, 0x10            ; x = 3
+    STB  R2, 0(R0)
+    LIL  R2, 0x04            ; x = 61
+    STB  R2, 7(R0)
+    JMP  wall_side_next
+
+wall_side_even:
+    LIL  R2, 0x20            ; x = 2
+    STB  R2, 0(R0)
+    LIL  R2, 0x08            ; x = 60
+    STB  R2, 7(R0)
+
+wall_side_next:
+    ADDI R0, 8
+    ADDI R1, 1
+    LIL  R2, 60
+    SLT  R3, R1, R2
+    BZ   R3, wall_sides_done
+    JMP  wall_sides
+wall_sides_done:
+
+    ; Bottom wall rows y=2,3: checkerboard across x=2..61.
+    LIL  R0, 0x10
+    LIH  R0, 0x06
+    LIL  R2, 0x2A            ; row y=2, byte 0: x=2,4,6
+    STB  R2, 0(R0)
+    LIL  R1, 6
+    LIL  R2, 0xAA
+wall_bot_2_mid:
+    ADDI R0, 1
+    STB  R2, 0(R0)
+    ADDI R1, -1
+    BZ   R1, wall_bot_2_last
+    JMP  wall_bot_2_mid
+wall_bot_2_last:
+    ADDI R0, 1
+    LIL  R2, 0xA8            ; row y=2, byte 7: x=56,58,60
+    STB  R2, 0(R0)
+
+    ADDI R0, 1               ; row y=3
+    LIL  R2, 0x15            ; byte 0: x=3,5,7
+    STB  R2, 0(R0)
+    LIL  R1, 6
+    LIL  R2, 0x55
+wall_bot_3_mid:
+    ADDI R0, 1
+    STB  R2, 0(R0)
+    ADDI R1, -1
+    BZ   R1, wall_bot_3_last
+    JMP  wall_bot_3_mid
+wall_bot_3_last:
+    ADDI R0, 1
+    LIL  R2, 0x54            ; byte 7: x=57,59,61
+    STB  R2, 0(R0)
+
+    ; Top wall rows y=60,61: same checkerboard, inside the 2-pixel gap.
+    LIL  R0, 0xE0
+    LIH  R0, 0x07
+    LIL  R2, 0x2A            ; row y=60
+    STB  R2, 0(R0)
+    LIL  R1, 6
+    LIL  R2, 0xAA
+wall_top_60_mid:
+    ADDI R0, 1
+    STB  R2, 0(R0)
+    ADDI R1, -1
+    BZ   R1, wall_top_60_last
+    JMP  wall_top_60_mid
+wall_top_60_last:
+    ADDI R0, 1
+    LIL  R2, 0xA8
+    STB  R2, 0(R0)
+
+    ADDI R0, 1               ; row y=61
+    LIL  R2, 0x15
+    STB  R2, 0(R0)
+    LIL  R1, 6
+    LIL  R2, 0x55
+wall_top_61_mid:
+    ADDI R0, 1
+    STB  R2, 0(R0)
+    ADDI R1, -1
+    BZ   R1, wall_top_done
+    JMP  wall_top_61_mid
+wall_top_done:
+    ADDI R0, 1
+    LIL  R2, 0x54
+    STB  R2, 0(R0)
+
+; ── Seed the food queue at 0x0500 with (x,y) pairs, 0xFF = wrap ───────
+    LIL  R0, 0x00
+    LIH  R0, 0x05            ; 0x0500
+    LIL  R2, 30
+    STB  R2, 0(R0)
+    LIL  R2, 32
+    STB  R2, 1(R0)           ; food 0 = (30,32)
+    LIL  R2, 30
+    STB  R2, 2(R0)
+    LIL  R2, 20
+    STB  R2, 3(R0)           ; food 1 = (30,20)
+    LIL  R2, 15
+    STB  R2, 4(R0)
+    LIL  R2, 20
+    STB  R2, 5(R0)           ; food 2 = (15,20)
+    LIL  R2, 15
+    STB  R2, 6(R0)
+    LIL  R2, 45
+    STB  R2, 7(R0)           ; food 3 = (15,45)
+    LIL  R2, 45
+    STB  R2, 8(R0)
+    LIL  R2, 45
+    STB  R2, 9(R0)           ; food 4 = (45,45)
+    LIL  R2, 45
+    STB  R2, 10(R0)
+    LIL  R2, 15
+    STB  R2, 11(R0)          ; food 5 = (45,15)
+    LIL  R2, 32
+    STB  R2, 12(R0)
+    LIL  R2, 32
+    STB  R2, 13(R0)          ; food 6 = (32,32)
+    LIL  R2, 0xFF
+    STB  R2, 14(R0)          ; wrap marker
+
+; ── Initial snake: 6 px long at y=32, x=15..20, head (20,32), dir RIGHT ─
+    LIL  R0, 20
+    STW  R0, -16(R7)         ; head_x = 20
+    LIL  R0, 32
+    STW  R0, -14(R7)         ; head_y = 32
+    LIL  R0, 1
+    STW  R0, -12(R7)         ; dir_dx = +1
+    LIL  R0, 0
+    STW  R0, -10(R7)         ; dir_dy = 0
+    LIL  R0, 6
+    STW  R0, -8(R7)          ; length = 6
+    LIL  R0, 5
+    STW  R0, -6(R7)          ; head_idx = 5
+    LIL  R0, 0
+    STW  R0, -4(R7)          ; tail_idx = 0
+    LIL  R0, 0x02
+    LIH  R0, 0x05
+    STW  R0, -2(R7)          ; food_ptr = 0x0502
+    LIL  R0, 30
+    STW  R0, 0(R7)           ; food_x = 30
+    LIL  R0, 32
+    STW  R0, 2(R7)           ; food_y = 32
+
+    ; ring buffer cells[0..5] = packed (y<<6)|x for x=15..20, y=32
+    LIL  R0, 0x40
+    LIH  R0, 0x04            ; ring base 0x0440
+    LIL  R1, 15             ; x
+    LIL  R3, 6             ; count
+    LIL  R4, 32
+    SHL  R4, 6            ; y<<6  (32<<6 = 0x800)
+seed_body:
+    MOV  R2, R4
+    OR   R2, R2, R1        ; packed = (y<<6)|x
+    STW  R2, 0(R0)
+    ADDI R0, 2
+    ADDI R1, 1
+    ADDI R3, -1
+    BZ   R3, seed_done
+    JMP  seed_body
+seed_done:
+
+    ; draw initial body pixels (15..20, 32) and the first food (30,32)
+    LIL  R0, 15
+    LIL  R1, 32
+    CALL set_px
+    LIL  R0, 16
+    LIL  R1, 32
+    CALL set_px
+    LIL  R0, 17
+    LIL  R1, 32
+    CALL set_px
+    LIL  R0, 18
+    LIL  R1, 32
+    CALL set_px
+    LIL  R0, 19
+    LIL  R1, 32
+    CALL set_px
+    LIL  R0, 20
+    LIL  R1, 32
+    CALL set_px
+    LIL  R0, 30
+    LIL  R1, 32
+    CALL set_px             ; food
+    JMP  main
+
+; ======================================================================
+;  MAIN GAME LOOP  (advances the head one pixel per pass)
+; ======================================================================
+main:
+    ; ── A. Read keyboard at 0x05FF ────────────────────────────────────
+    LIL  R0, 0xFF
+    LIH  R0, 0x05
+    LDB  R1, 0(R0)          ; live key bits
+
+    LIL  R2, 16
+    AND  R2, R1, R2        ; QUIT
+    BZ   R2, no_quit
+    JMP  game_over
+no_quit:
+
+    ; UP (bit0): ignore if currently going down (dir_dy == -1)
+    LIL  R2, 1
+    AND  R2, R1, R2
+    BZ   R2, up_done
+    LDW  R3, -10(R7)
+    ADDI R3, 1
+    BZ   R3, up_done
+    LIL  R3, 0
+    STW  R3, -12(R7)       ; dir_dx = 0
+    LIL  R3, 1
+    STW  R3, -10(R7)      ; dir_dy = +1
+up_done:
+
+    ; DOWN (bit1): ignore if currently going up (dir_dy == +1)
+    LIL  R2, 2
+    AND  R2, R1, R2
+    BZ   R2, down_done
+    LDW  R3, -10(R7)
+    ADDI R3, -1
+    BZ   R3, down_done
+    LIL  R3, 0
+    STW  R3, -12(R7)
+    LIL  R3, 0xFF
+    LIH  R3, 0xFF
+    STW  R3, -10(R7)     ; dir_dy = -1
+down_done:
+
+    ; LEFT (bit2): ignore if currently going right (dir_dx == +1)
+    LIL  R2, 4
+    AND  R2, R1, R2
+    BZ   R2, left_done
+    LDW  R3, -12(R7)
+    ADDI R3, -1
+    BZ   R3, left_done
+    LIL  R3, 0
+    STW  R3, -10(R7)
+    LIL  R3, 0xFF
+    LIH  R3, 0xFF
+    STW  R3, -12(R7)    ; dir_dx = -1
+left_done:
+
+    ; RIGHT (bit3): ignore if currently going left (dir_dx == -1)
+    LIL  R2, 8
+    AND  R2, R1, R2
+    BZ   R2, right_done
+    LDW  R3, -12(R7)
+    ADDI R3, 1
+    BZ   R3, right_done
+    LIL  R3, 0
+    STW  R3, -10(R7)
+    LIL  R3, 1
+    STW  R3, -12(R7)   ; dir_dx = +1
+right_done:
+
+    ; ── B. New head position ──────────────────────────────────────────
+    LDW  R0, -16(R7)       ; head_x
+    LDW  R1, -12(R7)       ; dir_dx
+    ADD  R0, R0, R1        ; new_x
+    STW  R0, 4(R7)
+    LDW  R1, -14(R7)       ; head_y
+    LDW  R2, -10(R7)       ; dir_dy
+    ADD  R1, R1, R2        ; new_y
+    STW  R1, 6(R7)
+
+    ; ── C. Wall collision (playfield is [4,59]) ───────────────────────
+    LIL  R3, 4
+    SLT  R2, R0, R3        ; new_x < 4
+    BZ   R2, chk_x_hi
+    JMP  game_over
+chk_x_hi:
+    LIL  R3, 59
+    SLT  R2, R3, R0       ; new_x > 59
+    BZ   R2, chk_y_lo
+    JMP  game_over
+chk_y_lo:
+    LIL  R3, 4
+    SLT  R2, R1, R3       ; new_y < 4
+    BZ   R2, chk_y_hi
+    JMP  game_over
+chk_y_hi:
+    LIL  R3, 59
+    SLT  R2, R3, R1      ; new_y > 59
+    BZ   R2, walls_ok
+    JMP  game_over
+walls_ok:
+
+    ; ── D. eat_flag = (new == food) ───────────────────────────────────
+    LDW  R0, 4(R7)
+    LDW  R2, 0(R7)
+    SUB  R2, R0, R2       ; new_x - food_x
+    BZ   R2, eat_chk_y
+    JMP  set_no_eat
+eat_chk_y:
+    LDW  R0, 6(R7)
+    LDW  R2, 2(R7)
+    SUB  R2, R0, R2       ; new_y - food_y
+    BZ   R2, set_eat
+    JMP  set_no_eat
+set_eat:
+    LIL  R3, 1
+    STW  R3, 8(R7)
+    JMP  eat_flag_done
+set_no_eat:
+    LIL  R3, 0
+    STW  R3, 8(R7)
+eat_flag_done:
+
+    ; ── E. grow_flag = eat_flag AND (length < 63) ─────────────────────
+    LDW  R3, 8(R7)
+    BZ   R3, grow_zero
+    LDW  R3, -8(R7)
+    LIL  R2, 63
+    SLT  R3, R3, R2      ; length < 63
+    STW  R3, 10(R7)
+    JMP  grow_done
+grow_zero:
+    LIL  R3, 0
+    STW  R3, 10(R7)
+grow_done:
+
+    ; ── F. Erase + advance tail, UNLESS growing ───────────────────────
+    LDW  R3, 10(R7)
+    BZ   R3, do_erase
+    JMP  erase_done
+do_erase:
+    LDW  R3, -4(R7)       ; tail_idx
+    SHL  R3, 1
+    LIL  R2, 0x40
+    LIH  R2, 0x04
+    ADD  R2, R2, R3      ; &cells[tail_idx]
+    LDW  R3, 0(R2)       ; packed tail
+    MOV  R0, R3
+    LIL  R2, 63
+    AND  R0, R0, R2     ; tail_x = packed & 63
+    MOV  R1, R3
+    SHR  R1, 6          ; tail_y = packed >> 6
+    CALL clr_px
+    LDW  R3, -4(R7)      ; tail_idx = (tail_idx+1) & 63
+    ADDI R3, 1
+    LIL  R2, 63
+    AND  R3, R3, R2
+    STW  R3, -4(R7)
+erase_done:
+
+    ; ── G. Self/wall collision at destination, UNLESS eating ──────────
+    LDW  R3, 8(R7)
+    BZ   R3, do_coll
+    JMP  coll_done
+do_coll:
+    LDW  R0, 4(R7)
+    LDW  R1, 6(R7)
+    CALL test_px         ; R2 = lit?
+    BZ   R2, coll_done
+    JMP  game_over
+coll_done:
+
+    ; ── H. Draw the new head + push it onto the ring buffer ───────────
+    LDW  R0, 4(R7)
+    LDW  R1, 6(R7)
+    CALL set_px
+    LDW  R3, -6(R7)       ; head_idx = (head_idx+1) & 63
+    ADDI R3, 1
+    LIL  R2, 63
+    AND  R3, R3, R2
+    STW  R3, -6(R7)
+    SHL  R3, 1
+    LIL  R2, 0x40
+    LIH  R2, 0x04
+    ADD  R2, R2, R3     ; &cells[head_idx]
+    LDW  R0, 6(R7)
+    SHL  R0, 6          ; new_y << 6
+    LDW  R1, 4(R7)
+    OR   R0, R0, R1     ; packed = (new_y<<6) | new_x
+    STW  R0, 0(R2)
+    LDW  R0, 4(R7)
+    STW  R0, -16(R7)     ; head_x = new_x
+    LDW  R0, 6(R7)
+    STW  R0, -14(R7)     ; head_y = new_y
+
+    ; ── I. If growing, length++ ───────────────────────────────────────
+    LDW  R3, 10(R7)
+    BZ   R3, len_done
+    LDW  R3, -8(R7)
+    ADDI R3, 1
+    STW  R3, -8(R7)
+len_done:
+
+    ; ── J. If we ate, load + draw the next food ───────────────────────
+    LDW  R3, 8(R7)
+    BZ   R3, frame_done
+    LDW  R3, -2(R7)      ; food_ptr
+    LDB  R0, 0(R3)       ; next x
+    LIL  R2, 0xFF
+    SUB  R2, R0, R2     ; x == 0xFF -> wrap
+    BZ   R2, food_wrap
+    JMP  food_have
+food_wrap:
+    LIL  R3, 0x00
+    LIH  R3, 0x05       ; ptr = 0x0500
+    LDB  R0, 0(R3)
+food_have:
+    LDB  R1, 1(R3)      ; y
+    MOV  R2, R3
+    ADDI R2, 2
+    STW  R2, -2(R7)     ; food_ptr += 2
+    STW  R0, 0(R7)      ; food_x
+    STW  R1, 2(R7)      ; food_y
+    CALL set_px         ; draw new food
+frame_done:
+    JMP  main
+
+; ======================================================================
+;  Pixel helpers — address = 0x0600 + y*8 + x/8 ; mask = table[x&7]
+;    in: R0 = x, R1 = y ; preserve R0,R1 ; clobber R2,R3,R4,R5 ; link R6
+; ======================================================================
+set_px:                    ; set pixel (x,y)
+    MOV  R2, R1
+    SHL  R2, 3
+    MOV  R3, R0
+    SHR  R3, 3
+    ADD  R2, R2, R3
+    LIL  R3, 0x00
+    LIH  R3, 0x06
+    ADD  R2, R2, R3        ; R2 = byte address
+    MOV  R3, R0
+    LIL  R4, 7
+    AND  R3, R3, R4
+    LIL  R4, 0x20
+    LIH  R4, 0x04
+    ADD  R4, R4, R3
+    LDB  R5, 0(R4)         ; R5 = mask
+    LDB  R3, 0(R2)
+    OR   R3, R3, R5
+    STB  R3, 0(R2)
+    RET
+
+clr_px:                    ; clear pixel (x,y)
+    MOV  R2, R1
+    SHL  R2, 3
+    MOV  R3, R0
+    SHR  R3, 3
+    ADD  R2, R2, R3
+    LIL  R3, 0x00
+    LIH  R3, 0x06
+    ADD  R2, R2, R3
+    MOV  R3, R0
+    LIL  R4, 7
+    AND  R3, R3, R4
+    LIL  R4, 0x20
+    LIH  R4, 0x04
+    ADD  R4, R4, R3
+    LDB  R5, 0(R4)
+    LDB  R3, 0(R2)
+    NOT  R4, R5           ; ~mask
+    AND  R3, R3, R4
+    STB  R3, 0(R2)
+    RET
+
+test_px:                   ; R2 = (pixel (x,y) lit ? nonzero : 0)
+    MOV  R2, R1
+    SHL  R2, 3
+    MOV  R3, R0
+    SHR  R3, 3
+    ADD  R2, R2, R3
+    LIL  R3, 0x00
+    LIH  R3, 0x06
+    ADD  R2, R2, R3
+    MOV  R3, R0
+    LIL  R4, 7
+    AND  R3, R3, R4
+    LIL  R4, 0x20
+    LIH  R4, 0x04
+    ADD  R4, R4, R3
+    LDB  R5, 0(R4)
+    LDB  R3, 0(R2)
+    AND  R3, R3, R5
+    MOV  R2, R3
+    RET
+
+; ======================================================================
+;  GAME OVER  —  freeze the final frame
+; ======================================================================
+game_over:
+    HLT

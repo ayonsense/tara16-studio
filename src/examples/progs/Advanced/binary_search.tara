@@ -1,0 +1,77 @@
+; ---------------------------------------------------------------------------
+; Binary search on a sorted byte array
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Binary search for a sorted byte array.
+;
+; Interface at label "search":
+;   R0 = starting byte address of sorted array
+;   R1 = number of elements
+;   R2 = search key
+;
+; Return value:
+;   R3 = index of matching element, or 0xFFFF if not found
+;
+; The demo setup below searches for 7 in [1,3,5,7,9,11] at 0x0400.
+; After HLT, R3 contains 3.
+
+; ---- Demo setup -----------------------------------------------------
+        LIL  R0, 0
+        LIH  R0, 4          ; R0 = 0x0400
+        LIL  R1, 6          ; N = 6 byte elements
+        LIL  R2, 7          ; key = 7
+
+        LIL  R3, 1
+        STB  R3, 0(R0)
+        LIL  R3, 3
+        STB  R3, 1(R0)
+        LIL  R3, 5
+        STB  R3, 2(R0)
+        LIL  R3, 7
+        STB  R3, 3(R0)
+        LIL  R3, 9
+        STB  R3, 4(R0)
+        LIL  R3, 11
+        STB  R3, 5(R0)
+
+; ---- Binary search --------------------------------------------------
+; R3 = result index
+; R4 = low index
+; R5 = high index
+; R6 = mid index
+; R7 = scratch / loaded array value
+
+search: LIL  R3, 255
+        LIH  R3, 255        ; default result = 0xFFFF (not found)
+        LIL  R4, 0          ; low = 0
+        MOV  R5, R1
+        ADDI R5, -1         ; high = N - 1
+
+loop:   SUB  R7, R5, R4
+        BN   R7, done       ; high < low
+
+        MOV  R6, R4
+        ADD  R6, R6, R5
+        SHR  R6, 1          ; mid = (low + high) / 2
+
+        ADD  R7, R0, R6
+        LDB  R7, 0(R7)      ; R7 = A[mid]
+        SUB  R7, R7, R2     ; compare A[mid] - key
+
+        BZ   R7, found
+        BN   R7, go_right   ; A[mid] < key
+
+        MOV  R5, R6         ; A[mid] > key, high = mid - 1
+        ADDI R5, -1
+        JMP  loop
+
+go_right:
+        MOV  R4, R6         ; low = mid + 1
+        ADDI R4, 1
+        JMP  loop
+
+found:  MOV  R3, R6
+
+done:   HLT

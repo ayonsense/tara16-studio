@@ -1,0 +1,355 @@
+; ---------------------------------------------------------------------------
+; Bouncing-ball glyph animation
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Bouncing glyph demo for the TARA memory-mapped display.
+;
+; Display map:
+;   0x0600-0x07FF  framebuffer
+;   64x64 pixels, 1 bit per pixel, 8 horizontal pixels per byte
+;   framebuffer row stride = 8 bytes
+;
+; Glyph map:
+;   0x0400 byte  glyph width in pixels
+;   0x0401 byte  glyph height in pixels
+;   0x0402...    packed 1-bit row-major glyph bytes
+;
+; Glyph rows are stored top-to-bottom. Each row is padded to a whole
+; number of bytes: row_bytes = ceil(width / 8). This matches the image
+; import tool's "Glyph asset" format.
+;
+; Animation state:
+;   0x0580 byte  x byte-column, so x pixel = x * 8
+;   0x0581 byte  y bottom row
+;   0x0582 byte  dx, 0=left, 1=right
+;   0x0583 byte  dy, 0=down, 1=up
+;
+; The blitter is byte-aligned horizontally. Import a ball glyph at
+; 0x0400, or let this program create a default 16x16 ball there.
+
+; ---- Ensure a glyph exists at 0x0400 -------------------------------
+        LIL  R6, 0
+        LIH  R6, 4          ; R6 = 0x0400 glyph base
+        LDB  R0, 0(R6)      ; width
+        BZ   R0, init_glyph
+        JMP  init_state
+
+; Default 16x16 ball glyph. Header = width,height, then 16 rows x 2 bytes.
+init_glyph:
+        LIL  R6, 0
+        LIH  R6, 4
+        LIL  R0, 16
+        STB  R0, 0(R6)      ; width
+        STB  R0, 1(R6)      ; height
+        ADDI R6, 2
+
+        LIL  R0, 3
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        LIL  R0, 192
+        STB  R0, 0(R6)
+        ADDI R6, 1
+
+        LIL  R0, 15
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        LIL  R0, 240
+        STB  R0, 0(R6)
+        ADDI R6, 1
+
+        LIL  R0, 31
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        LIL  R0, 248
+        STB  R0, 0(R6)
+        ADDI R6, 1
+
+        LIL  R0, 63
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        LIL  R0, 252
+        STB  R0, 0(R6)
+        ADDI R6, 1
+
+        LIL  R0, 127
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        LIL  R0, 254
+        STB  R0, 0(R6)
+        ADDI R6, 1
+
+        LIL  R0, 127
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        LIL  R0, 254
+        STB  R0, 0(R6)
+        ADDI R6, 1
+
+        LIL  R0, 255
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        STB  R0, 0(R6)
+        ADDI R6, 1
+
+        LIL  R0, 255
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        STB  R0, 0(R6)
+        ADDI R6, 1
+
+        LIL  R0, 255
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        STB  R0, 0(R6)
+        ADDI R6, 1
+
+        LIL  R0, 255
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        STB  R0, 0(R6)
+        ADDI R6, 1
+
+        LIL  R0, 127
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        LIL  R0, 254
+        STB  R0, 0(R6)
+        ADDI R6, 1
+
+        LIL  R0, 127
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        LIL  R0, 254
+        STB  R0, 0(R6)
+        ADDI R6, 1
+
+        LIL  R0, 63
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        LIL  R0, 252
+        STB  R0, 0(R6)
+        ADDI R6, 1
+
+        LIL  R0, 31
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        LIL  R0, 248
+        STB  R0, 0(R6)
+        ADDI R6, 1
+
+        LIL  R0, 15
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        LIL  R0, 240
+        STB  R0, 0(R6)
+        ADDI R6, 1
+
+        LIL  R0, 3
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        LIL  R0, 192
+        STB  R0, 0(R6)
+
+; ---- Initial state --------------------------------------------------
+init_state:
+        LIL  R7, 128
+        LIH  R7, 5          ; R7 = 0x0580 state base
+
+        LIL  R0, 0
+        STB  R0, 0(R7)      ; x byte-column = 0
+        STB  R0, 1(R7)      ; y bottom row = 0
+
+        LIL  R0, 1
+        STB  R0, 2(R7)      ; dx = right
+        STB  R0, 3(R7)      ; dy = up
+
+; ---- Animation loop -------------------------------------------------
+main_loop:
+        LIL  R7, 128
+        LIH  R7, 5          ; state base
+
+        LDB  R1, 0(R7)      ; R1 = x byte-column
+        LDB  R2, 1(R7)      ; R2 = y bottom row
+
+; ---- Erase old glyph only ------------------------------------------
+; This is much less flickery than clearing the whole framebuffer.
+erase_setup:
+        LIL  R7, 0
+        LIH  R7, 4          ; glyph base
+        LDB  R4, 0(R7)      ; width
+        ADDI R4, 7
+        SHR  R4, 3          ; row_bytes
+        LDB  R5, 1(R7)      ; height
+
+        MOV  R6, R2
+        ADD  R6, R6, R5
+        ADDI R6, -1         ; top display row = y + height - 1
+        SHL  R6, 3          ; row * 8 bytes
+        LIL  R0, 0
+        LIH  R0, 6          ; framebuffer base
+        ADD  R6, R6, R0
+        ADD  R6, R6, R1
+        LIL  R0, 0          ; erase byte
+
+erase_row:
+        BZ   R5, reload_state
+        MOV  R3, R4         ; bytes remaining in this glyph row
+
+erase_byte:
+        BZ   R3, erase_row_done
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        ADDI R3, -1
+        JMP  erase_byte
+
+erase_row_done:
+        SUB  R6, R6, R4     ; back to row start
+        ADDI R6, -8         ; next lower display row
+        ADDI R5, -1
+        JMP  erase_row
+
+reload_state:
+        LIL  R7, 128
+        LIH  R7, 5
+        LDB  R1, 0(R7)      ; R1 = x byte-column
+        LDB  R2, 1(R7)      ; R2 = y bottom row
+        LDB  R3, 2(R7)      ; R3 = dx
+        LDB  R4, 3(R7)      ; R4 = dy
+
+; ---- Move x and bounce at left/right walls -------------------------
+move_x:
+        BZ   R3, move_left
+        ADDI R1, 1
+        JMP  check_x
+
+move_left:
+        ADDI R1, -1
+
+check_x:
+        BN   R1, hit_left
+
+        LIL  R6, 0
+        LIH  R6, 4          ; glyph base
+        LDB  R5, 0(R6)      ; glyph width
+        ADDI R5, 7
+        SHR  R5, 3          ; row_bytes = ceil(width / 8)
+        LIL  R6, 8
+        SUB  R5, R6, R5     ; max x byte-column = 8 - row_bytes
+        SUB  R5, R5, R1     ; max_x - x
+        BN   R5, hit_right
+        JMP  x_done
+
+hit_left:
+        LIL  R1, 0
+        LIL  R3, 1          ; dx = right
+        JMP  x_done
+
+hit_right:
+        LIL  R6, 0
+        LIH  R6, 4
+        LDB  R1, 0(R6)
+        ADDI R1, 7
+        SHR  R1, 3          ; row_bytes
+        LIL  R5, 8
+        SUB  R1, R5, R1     ; x = max_x
+        LIL  R3, 0          ; dx = left
+
+x_done:
+
+; ---- Move y and bounce at bottom/top walls -------------------------
+        BZ   R4, move_down
+        ADDI R2, 1
+        JMP  check_y
+
+move_down:
+        ADDI R2, -1
+
+check_y:
+        BN   R2, hit_bottom
+
+        LIL  R6, 0
+        LIH  R6, 4
+        LDB  R5, 1(R6)      ; glyph height
+        LIL  R6, 64
+        SUB  R5, R6, R5     ; max y = 64 - height
+        SUB  R5, R5, R2     ; max_y - y
+        BN   R5, hit_top
+        JMP  y_done
+
+hit_bottom:
+        LIL  R2, 0
+        LIL  R4, 1          ; dy = up
+        JMP  y_done
+
+hit_top:
+        LIL  R6, 0
+        LIH  R6, 4
+        LDB  R2, 1(R6)
+        LIL  R5, 64
+        SUB  R2, R5, R2     ; y = max_y
+        LIL  R4, 0          ; dy = down
+
+y_done:
+        LIL  R7, 128
+        LIH  R7, 5
+        STB  R1, 0(R7)
+        STB  R2, 1(R7)
+        STB  R3, 2(R7)
+        STB  R4, 3(R7)
+
+; ---- Draw glyph into framebuffer -----------------------------------
+; Registers during draw:
+;   R1 = x byte-column
+;   R2 = y bottom row
+;   R4 = row_bytes
+;   R5 = rows remaining
+;   R6 = framebuffer row pointer
+;   R7 = glyph source pointer
+draw_setup:
+        LIL  R7, 0
+        LIH  R7, 4          ; glyph base
+        LDB  R4, 0(R7)      ; width
+        ADDI R4, 7
+        SHR  R4, 3          ; row_bytes
+        LDB  R5, 1(R7)      ; height
+        ADDI R7, 2          ; source points at first glyph row, top first
+
+        MOV  R6, R2
+        ADD  R6, R6, R5
+        ADDI R6, -1         ; top display row = y + height - 1
+        SHL  R6, 3          ; row * 8 bytes
+        LIL  R0, 0
+        LIH  R0, 6          ; framebuffer base
+        ADD  R6, R6, R0
+        ADD  R6, R6, R1
+
+draw_row:
+        BZ   R5, delay_setup
+        MOV  R3, R4         ; bytes remaining in this glyph row
+
+draw_byte:
+        BZ   R3, row_done
+        LDB  R0, 0(R7)
+        ;NOT  R0, R0
+        STB  R0, 0(R6)
+        ADDI R7, 1
+        ADDI R6, 1
+        ADDI R3, -1
+        JMP  draw_byte
+
+row_done:
+        SUB  R6, R6, R4     ; back to row start
+        ADDI R6, -8         ; next lower display row
+        ADDI R5, -1
+        JMP  draw_row
+
+; ---- Delay so motion is visible ------------------------------------
+delay_setup:
+        LIL  R6, 80
+
+delay_loop:
+        ADDI R6, -1
+        BZ   R6, main_loop
+        JMP  delay_loop

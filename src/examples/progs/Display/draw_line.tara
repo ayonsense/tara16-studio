@@ -1,0 +1,386 @@
+; ---------------------------------------------------------------------------
+; Turtle / LOGO-style line drawing
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Turtle-style line drawing demo for the TARA memory-mapped display.
+;
+; Display:
+;   0x0600-0x07FF framebuffer
+;   64x64 pixels, 1 bit per pixel, 8 horizontal pixels per byte
+;
+; This file is meant as a reusable starting point for a LOGO-style layer:
+;   RT angle  -> load angle/30 into R0, then CALL turtle_rt
+;   FD count  -> load pixel count into R0, then CALL turtle_fd
+;
+; The heading model uses 12 directions, one every 30 degrees:
+;   heading 0 = 0 degrees, heading 1 = 30 degrees, ..., heading 11 = 330.
+; RT 60 is therefore:
+;        LIL  R0, 2
+;        CALL turtle_rt
+;
+; Turtle state lives at 0x0400:
+;   0x0400 word  x fixed-point, x * 8
+;   0x0402 word  y fixed-point, y * 8
+;   0x0404 byte  heading index, 0..11
+;   0x0405 byte  color, 0..1
+;   0x0406 word  dx fixed-point step
+;   0x0408 word  dy fixed-point step
+;   0x040A word  remaining FD count
+
+; ---- Demo program ---------------------------------------------------
+        LIL  R7, 240
+        LIH  R7, 5          ; stack top = 0x05F0
+
+        CALL clear_display
+
+        ; turtle starts at (8, 3), heading east, color 1
+        LIL  R5, 0
+        LIH  R5, 4          ; R5 = state base 0x0400
+
+        LIL  R1, 64         ; x = 8 pixels, fixed x8
+        STW  R1, 0(R5)
+        LIL  R1, 24         ; y = 3 pixels, fixed x8
+        STW  R1, 2(R5)
+
+        LIL  R1, 0
+        STB  R1, 4(R5)      ; heading = 0 degrees
+        LIL  R1, 1
+        STB  R1, 5(R5)      ; color = 1
+
+        LIL  R1, 8
+        STW  R1, 6(R5)      ; dx = +8
+        LIL  R1, 0
+        STW  R1, 8(R5)      ; dy = 0
+
+        ; FD 40
+        LIL  R0, 40
+        CALL turtle_fd
+
+        ; RT 120, FD 24
+        LIL  R0, 4          ; 120 / 30
+        CALL turtle_rt
+        LIL  R0, 24
+        CALL turtle_fd
+
+        ; RT 120, FD 24
+        LIL  R0, 4
+        CALL turtle_rt
+        LIL  R0, 24
+        CALL turtle_fd
+
+        ; RT 60, FD 18  (example of RT 60)
+        LIL  R0, 2
+        CALL turtle_rt
+        LIL  R0, 18
+        CALL turtle_fd
+
+done:
+        HLT
+
+
+; ---- clear_display --------------------------------------------------
+; Clears framebuffer bytes 0x0600..0x07FF.
+; Clobbers R0, R3, R4, R5.
+clear_display:
+        LIL  R0, 0
+        LIL  R5, 0
+        LIH  R5, 6          ; R5 = 0x0600
+        LIL  R4, 0
+        LIH  R4, 8          ; R4 = 0x0800
+
+clear_loop:
+        SUB  R3, R4, R5
+        BZ   R3, clear_ret
+        STB  R0, 0(R5)
+        ADDI R5, 1
+        JMP  clear_loop
+
+clear_ret:
+        RET
+
+
+; ---- turtle_fd ------------------------------------------------------
+; Input:
+;   R0 = number of pixels to move forward
+; Uses current turtle x/y, dx/dy, color.
+; Saves R6 because it calls plot_pixel.
+turtle_fd:
+        PUSH R6
+        LIL  R5, 0
+        LIH  R5, 4
+        STW  R0, 10(R5)     ; remaining count
+
+fd_loop:
+        LDW  R4, 10(R5)
+        BZ   R4, fd_done
+
+        LDW  R1, 0(R5)
+        SHR  R1, 3          ; x = xfp / 8
+        LDW  R2, 2(R5)
+        SHR  R2, 3          ; y = yfp / 8
+        LDB  R0, 5(R5)      ; color
+        CALL plot_pixel
+
+        LIL  R5, 0
+        LIH  R5, 4
+
+        LDW  R1, 0(R5)
+        LDW  R2, 6(R5)
+        ADD  R1, R1, R2
+        STW  R1, 0(R5)
+
+        LDW  R1, 2(R5)
+        LDW  R2, 8(R5)
+        ADD  R1, R1, R2
+        STW  R1, 2(R5)
+
+        LDW  R4, 10(R5)
+        ADDI R4, -1
+        STW  R4, 10(R5)
+        JMP  fd_loop
+
+fd_done:
+        POP  R6
+        RET
+
+
+; ---- turtle_rt ------------------------------------------------------
+; Input:
+;   R0 = number of 30-degree steps to turn right
+; Example:
+;   RT 60  => R0 = 2
+;   RT 120 => R0 = 4
+; Updates heading and dx/dy.
+turtle_rt:
+        LIL  R5, 0
+        LIH  R5, 4
+        LDB  R1, 4(R5)
+        ADD  R1, R1, R0
+
+rt_wrap:
+        LIL  R2, 12
+        SUB  R3, R1, R2
+        BN   R3, rt_store
+        MOV  R1, R3
+        JMP  rt_wrap
+
+rt_store:
+        STB  R1, 4(R5)
+
+        ; Dispatch by heading.
+        LIL  R2, 0
+        SUB  R3, R1, R2
+        BZ   R3, dir_0
+        LIL  R2, 1
+        SUB  R3, R1, R2
+        BZ   R3, dir_1
+        LIL  R2, 2
+        SUB  R3, R1, R2
+        BZ   R3, dir_2
+        LIL  R2, 3
+        SUB  R3, R1, R2
+        BZ   R3, dir_3
+        LIL  R2, 4
+        SUB  R3, R1, R2
+        BZ   R3, dir_4
+        LIL  R2, 5
+        SUB  R3, R1, R2
+        BZ   R3, dir_5
+        LIL  R2, 6
+        SUB  R3, R1, R2
+        BZ   R3, dir_6
+        LIL  R2, 7
+        SUB  R3, R1, R2
+        BZ   R3, dir_7
+        LIL  R2, 8
+        SUB  R3, R1, R2
+        BZ   R3, dir_8
+        LIL  R2, 9
+        SUB  R3, R1, R2
+        BZ   R3, dir_9
+        LIL  R2, 10
+        SUB  R3, R1, R2
+        BZ   R3, dir_10
+        JMP  dir_11
+
+dir_0:
+        LIL  R2, 8
+        LIL  R3, 0
+        JMP  dir_store
+dir_1:
+        LIL  R2, 7
+        LIL  R3, 4
+        JMP  dir_store
+dir_2:
+        LIL  R2, 4
+        LIL  R3, 7
+        JMP  dir_store
+dir_3:
+        LIL  R2, 0
+        LIL  R3, 8
+        JMP  dir_store
+dir_4:
+        LIL  R2, 252
+        LIH  R2, 255        ; -4
+        LIL  R3, 7
+        JMP  dir_store
+dir_5:
+        LIL  R2, 249
+        LIH  R2, 255        ; -7
+        LIL  R3, 4
+        JMP  dir_store
+dir_6:
+        LIL  R2, 248
+        LIH  R2, 255        ; -8
+        LIL  R3, 0
+        JMP  dir_store
+dir_7:
+        LIL  R2, 249
+        LIH  R2, 255        ; -7
+        LIL  R3, 252
+        LIH  R3, 255        ; -4
+        JMP  dir_store
+dir_8:
+        LIL  R2, 252
+        LIH  R2, 255        ; -4
+        LIL  R3, 249
+        LIH  R3, 255        ; -7
+        JMP  dir_store
+dir_9:
+        LIL  R2, 0
+        LIL  R3, 248
+        LIH  R3, 255        ; -8
+        JMP  dir_store
+dir_10:
+        LIL  R2, 4
+        LIL  R3, 249
+        LIH  R3, 255        ; -7
+        JMP  dir_store
+dir_11:
+        LIL  R2, 7
+        LIL  R3, 252
+        LIH  R3, 255        ; -4
+
+dir_store:
+        STW  R2, 6(R5)
+        STW  R3, 8(R5)
+        RET
+
+
+; ---- plot_pixel -----------------------------------------------------
+; Inputs:
+;   R0 = color 0..1
+;   R1 = x, 0..63
+;   R2 = y, 0..63
+; Clobbers R2, R3, R4, R5.  R6 is preserved as the return link.
+plot_pixel:
+        BN   R1, plot_ret
+        BN   R2, plot_ret
+
+        LIL  R5, 64
+        SLT  R4, R1, R5
+        BZ   R4, plot_ret
+
+        LIL  R5, 64
+        SLT  R4, R2, R5
+        BZ   R4, plot_ret
+
+        LIL  R4, 7
+        AND  R3, R1, R4     ; pixel slot = x % 8
+
+        MOV  R5, R2
+        SHL  R5, 3          ; y * 8 bytes per row
+        MOV  R4, R1
+        SHR  R4, 3          ; x / 8
+        ADD  R5, R5, R4
+        LIL  R4, 0
+        LIH  R4, 6
+        ADD  R5, R5, R4     ; framebuffer byte address
+
+        LDB  R4, 0(R5)      ; existing packed byte
+
+        BZ   R3, pix_slot0
+        ADDI R3, -1
+        BZ   R3, pix_slot1
+        ADDI R3, -1
+        BZ   R3, pix_slot2
+        ADDI R3, -1
+        BZ   R3, pix_slot3
+        ADDI R3, -1
+        BZ   R3, pix_slot4
+        ADDI R3, -1
+        BZ   R3, pix_slot5
+        ADDI R3, -1
+        BZ   R3, pix_slot6
+        JMP  pix_slot7
+
+pix_slot0:
+        LIL  R2, 127        ; clear bit 7
+        AND  R4, R4, R2
+        BZ   R0, pix_store
+        LIL  R2, 128
+        OR   R4, R4, R2
+        JMP  pix_store
+
+pix_slot1:
+        LIL  R2, 191        ; clear bit 6
+        AND  R4, R4, R2
+        BZ   R0, pix_store
+        LIL  R2, 64
+        OR   R4, R4, R2
+        JMP  pix_store
+
+pix_slot2:
+        LIL  R2, 223        ; clear bit 5
+        AND  R4, R4, R2
+        BZ   R0, pix_store
+        LIL  R2, 32
+        OR   R4, R4, R2
+        JMP  pix_store
+
+pix_slot3:
+        LIL  R2, 239        ; clear bit 4
+        AND  R4, R4, R2
+        BZ   R0, pix_store
+        LIL  R2, 16
+        OR   R4, R4, R2
+        JMP  pix_store
+
+pix_slot4:
+        LIL  R2, 247        ; clear bit 3
+        AND  R4, R4, R2
+        BZ   R0, pix_store
+        LIL  R2, 8
+        OR   R4, R4, R2
+        JMP  pix_store
+
+pix_slot5:
+        LIL  R2, 251        ; clear bit 2
+        AND  R4, R4, R2
+        BZ   R0, pix_store
+        LIL  R2, 4
+        OR   R4, R4, R2
+        JMP  pix_store
+
+pix_slot6:
+        LIL  R2, 253        ; clear bit 1
+        AND  R4, R4, R2
+        BZ   R0, pix_store
+        LIL  R2, 2
+        OR   R4, R4, R2
+        JMP  pix_store
+
+pix_slot7:
+        LIL  R2, 254        ; clear bit 0
+        AND  R4, R4, R2
+        BZ   R0, pix_store
+        LIL  R2, 1
+        OR   R4, R4, R2
+
+pix_store:
+        STB  R4, 0(R5)
+
+plot_ret:
+        RET

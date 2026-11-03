@@ -1,0 +1,24 @@
+; ---------------------------------------------------------------------------
+; Sum of 1..N
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Sum of the first N integers:  1 + 2 + ... + N.
+;
+; Algorithm:
+;   sum = 0
+;   for i = N down to 1:  sum += i
+;
+; Registers: R1 = i, R2 = sum.
+; With N = 10 the result is 55 = 0x0037 in R2.
+
+        LIL  R1, 10         ; N = 10
+        LIL  R2, 0          ; sum = 0
+
+loop:   BZ   R1, done       ; stop when i reaches 0
+        ADD  R2, R2, R1     ; sum += i
+        ADDI R1, -1         ; i--
+        JMP  loop
+
+done:   HLT                 ; R2 = 55

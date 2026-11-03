@@ -1,0 +1,60 @@
+; ---------------------------------------------------------------------------
+; Generate the first N primes
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Generate the first N prime numbers and store them as bytes.
+;
+; Algorithm (trial division by repeated subtraction):
+;   for each candidate starting at 2:
+;       for divisor = 2 .. candidate:
+;           if divisor == candidate: candidate is prime
+;           if candidate mod divisor == 0: candidate is composite
+;       record primes until N have been found.
+;
+; Interface:
+;   R0 = output base address, R1 = how many primes to generate.
+; Demo: first 10 primes written as bytes at 0x0400, giving
+;   [2, 3, 5, 7, 11, 13, 17, 19, 23, 29].
+
+        LIL  R0, 0
+        LIH  R0, 4          ; output base = 0x0400
+        LIL  R1, 10         ; N = 10 primes
+
+; Registers: R2 = output pointer, R3 = candidate,
+;            R4 = divisor, R5 = remainder scratch, R6 = compare scratch.
+generate:
+        BZ   R1, done       ; nothing left to do
+        MOV  R2, R0         ; output pointer = base
+        LIL  R3, 2          ; first candidate = 2
+
+candidate:
+        LIL  R4, 2          ; divisor = 2
+
+test_divisor:
+        SUB  R6, R4, R3
+        BZ   R6, is_prime   ; divisor reached candidate -> prime
+        MOV  R5, R3         ; remainder = candidate
+
+mod_loop:
+        BZ   R5, composite  ; remainder hit 0 -> divisible
+        BN   R5, next_div   ; remainder went negative -> not divisible
+        SUB  R5, R5, R4     ; remainder -= divisor
+        JMP  mod_loop
+
+next_div:
+        ADDI R4, 1          ; try the next divisor
+        JMP  test_divisor
+
+is_prime:
+        STB  R3, 0(R2)      ; store the prime byte
+        ADDI R2, 1          ; advance output pointer
+        ADDI R1, -1         ; one fewer prime needed
+        BZ   R1, done
+
+composite:
+        ADDI R3, 1          ; next candidate
+        JMP  candidate
+
+done:   HLT

@@ -1,0 +1,41 @@
+; ---------------------------------------------------------------------------
+; Recursive factorial (CALL / RET + stack)
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Recursive factorial -- a demonstration of CALL / RET and the stack.
+;
+; fact(n):
+;     if n <= 1:  return 1
+;     return n * fact(n - 1)
+;
+; CALL saves the return address in R6 (the link register); a nested call
+; overwrites R6, so each frame pushes R6 and its own n onto the stack at
+; R7 before recursing, and restores them afterwards.
+;
+; Demo computes 5! = 120, leaving the result in R2.
+
+        LIL  R7, 0
+        LIH  R7, 5          ; stack top = 0x0500 (PUSH grows downward)
+        LIL  R1, 5          ; n = 5
+        CALL fact
+        HLT                 ; R2 = 120 = 0x0078
+
+; fact(n in R1) -> result in R2
+fact:   LIL  R3, 1
+        SUB  R4, R1, R3
+        BN   R4, base       ; n < 1  -> return 1
+        BZ   R4, base       ; n == 1 -> return 1
+
+        PUSH R6             ; save return link
+        PUSH R1             ; save n
+        ADDI R1, -1         ; n - 1
+        CALL fact           ; R2 = fact(n-1)
+        POP  R1             ; restore n
+        POP  R6             ; restore link
+        MUL  R2, R1, R2     ; n * fact(n-1)
+        RET
+
+base:   LIL  R2, 1          ; fact(0) = fact(1) = 1
+        RET

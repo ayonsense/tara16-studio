@@ -1,0 +1,26 @@
+; ---------------------------------------------------------------------------
+; Iterative factorial  (6! = 720)
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Iterative factorial:  6! = 720.
+;
+; Algorithm:
+;   result = 1
+;   for factor = n down to 1:
+;       result = result * factor
+;
+; Registers: R1 = n, R3 = result, R4 = factor.
+; After HLT, R3 = 720 = 0x02D0.
+
+        LIL  R1, 6          ; n = 6
+        LIL  R3, 1          ; result = 1
+        MOV  R4, R1         ; factor = n
+
+outer:  BZ   R4, done       ; stop once factor reaches 0
+        MUL  R3, R3, R4     ; result *= factor
+        ADDI R4, -1         ; factor--
+        JMP  outer
+
+done:   HLT                 ; R3 = 720

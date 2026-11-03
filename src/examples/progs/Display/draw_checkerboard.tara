@@ -1,0 +1,39 @@
+; ---------------------------------------------------------------------------
+; Checkerboard test pattern
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Paint a static checkerboard across the 64x64 1-bit display, then halt
+; so the pattern stays on screen.
+;
+; Display: framebuffer 0x0600-0x07FF, 8 pixels per byte, 8 bytes per row.
+; Each row is filled with 0xAA (10101010); alternate rows are flipped to
+; 0x55 (01010101) so neighbouring pixels never share colour -- a checker.
+;
+; Registers: R5 = pointer, R4 = end, R0 = row pattern, R6 = flip mask,
+;            R1 = column counter, R2/R3 = scratch.
+
+        LIL  R5, 0
+        LIH  R5, 6          ; pointer = 0x0600
+        LIL  R4, 0
+        LIH  R4, 8          ; end = 0x0800
+        LIL  R0, 0xAA       ; pattern for the current row
+        LIL  R6, 0xFF       ; XOR mask: flips 0xAA <-> 0x55
+        LIL  R1, 0          ; byte column within the row (0..7)
+
+fill:   SUB  R2, R4, R5
+        BZ   R2, done       ; reached the end of the framebuffer
+        STB  R0, 0(R5)
+        ADDI R5, 1
+        ADDI R1, 1
+        LIL  R3, 8
+        SUB  R3, R1, R3
+        BZ   R3, flip       ; finished a row of 8 bytes
+        JMP  fill
+
+flip:   LIL  R1, 0          ; reset column
+        XOR  R0, R0, R6     ; flip the row pattern
+        JMP  fill
+
+done:   HLT

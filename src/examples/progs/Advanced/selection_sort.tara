@@ -1,0 +1,56 @@
+; ---------------------------------------------------------------------------
+; Selection sort
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Selection sort for a byte array.
+;
+; Algorithm:
+;   for i = 0 .. N-1:
+;       find the smallest element in A[i .. N-1]
+;       swap it into position i.
+;
+; Input contract:
+;   A[0..255] is already stored at byte addresses 0x0400..0x04FF.
+;   The 256 unsigned byte values are sorted ascending in place.
+;   This program does not seed or otherwise overwrite the input before sorting.
+;
+; Registers: R0 = base, R1 = N, R2 = i ptr, R3 = min ptr, R4 = j ptr,
+;            R5 = A[j], R6 = end ptr, R7 = scratch.
+
+        LIL  R0, 0
+        LIH  R0, 4          ; base = 0x0400
+        LIL  R1, 0
+        LIH  R1, 1          ; N = 0x0100 = 256 bytes
+
+sort:   ADD  R6, R0, R1     ; end = base + N
+        MOV  R2, R0         ; i = base
+
+i_loop: SUB  R7, R2, R6
+        BZ   R7, done       ; i == end -> sorted
+        MOV  R3, R2         ; min ptr = i
+        MOV  R4, R2
+        ADDI R4, 1          ; j = i + 1
+
+j_loop: SUB  R7, R4, R6
+        BZ   R7, do_swap    ; scanned the whole tail
+        LDB  R5, 0(R4)      ; A[j]
+        LDB  R7, 0(R3)      ; A[min]
+        SUB  R7, R5, R7
+        BN   R7, set_min    ; A[j] < A[min]
+        JMP  j_next
+set_min:
+        MOV  R3, R4         ; new minimum position
+j_next: ADDI R4, 1
+        JMP  j_loop
+
+do_swap:
+        LDB  R5, 0(R2)      ; swap A[i] and A[min]
+        LDB  R7, 0(R3)
+        STB  R7, 0(R2)
+        STB  R5, 0(R3)
+        ADDI R2, 1          ; i++
+        JMP  i_loop
+
+done:   HLT

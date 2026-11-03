@@ -1,0 +1,32 @@
+; ---------------------------------------------------------------------------
+; Greatest common divisor (Euclid)
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Greatest common divisor by Euclid's subtraction method.
+;
+; Algorithm:
+;   while a != b:
+;       if a > b:  a = a - b
+;       else:      b = b - a
+;   gcd = a
+;
+; Registers: R1 = a, R2 = b, R4 = a-b, R3 = result.
+; gcd(48, 18) = 6, so R3 = 6 after HLT.
+
+        LIL  R1, 48         ; a = 48
+        LIL  R2, 18         ; b = 18
+
+loop:   SUB  R4, R1, R2     ; R4 = a - b
+        BZ   R4, done       ; a == b  -> finished
+        BN   R4, b_bigger   ; a <  b
+        MOV  R1, R4         ; a >  b:  a = a - b
+        JMP  loop
+
+b_bigger:
+        SUB  R2, R2, R1     ; b = b - a
+        JMP  loop
+
+done:   MOV  R3, R1         ; gcd in R3
+        HLT

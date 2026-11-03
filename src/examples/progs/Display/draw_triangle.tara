@@ -1,0 +1,86 @@
+; ---------------------------------------------------------------------------
+; Draw a filled triangle
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Display triangle demo for the TARA memory-mapped display.
+;
+; Display map:
+;   0x0600-0x07FF  framebuffer
+;   64x64 pixels, 1 bit per pixel, 8 horizontal pixels per byte
+;
+; Triangle dimensions used here:
+;   height = 24 pixels
+;   base   = 48 pixels
+;
+; This program writes whole bytes, so every written byte draws an 8-pixel-wide
+; on block. It clears the screen, draws a filled triangle,
+; then halts so the image stays visible.
+
+; ---- Clear framebuffer ---------------------------------------------
+        LIL  R0, 0
+        LIL  R6, 0
+        LIH  R6, 6          ; R6 = 0x0600 framebuffer start
+        LIL  R7, 0
+        LIH  R7, 8          ; R7 = 0x0800 framebuffer end
+
+clear_loop:
+        SUB  R5, R7, R6
+        BZ   R5, draw_setup
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        JMP  clear_loop
+
+; ---- Draw filled triangle ------------------------------------------
+; Registers:
+;   R0 = color byte, 0xFF means eight on pixels
+;   R1 = row index, 0..23
+;   R2 = current row base address
+;   R3 = row width in bytes
+;   R4 = scratch / draw count
+;   R5 = scratch
+;   R6 = draw pointer
+
+draw_setup:
+        LIL  R0, 255        ; eight 1-bit pixels, all on
+        LIL  R1, 0          ; row index = 0
+        LIL  R2, 64
+        LIH  R2, 6          ; row base = 0x0640, top y = 8
+        LIL  R3, 1          ; starting width = 1 byte = 8 pixels
+
+row_loop:
+        MOV  R6, R2         ; draw pointer = row base + center - width/2
+        ADDI R6, 4          ; center byte column = 4
+        MOV  R4, R3
+        SHR  R4, 1          ; half width in bytes
+        SUB  R6, R6, R4
+
+        MOV  R4, R3         ; draw R3 bytes on this row
+
+draw_row_loop:
+        BZ   R4, row_done
+        STB  R0, 0(R6)
+        ADDI R6, 1
+        ADDI R4, -1
+        JMP  draw_row_loop
+
+row_done:
+        ADDI R2, 8          ; next display row, 8 bytes per 64-pixel row
+        ADDI R1, 1
+
+        LIL  R5, 24
+        SUB  R5, R5, R1     ; done after 24 rows
+        BZ   R5, done
+
+        LIL  R5, 3
+        AND  R5, R1, R5     ; grow width every four rows
+        BZ   R5, grow_width
+        JMP  row_loop
+
+grow_width:
+        ADDI R3, 1
+        JMP  row_loop
+
+done:
+        HLT

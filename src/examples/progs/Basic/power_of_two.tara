@@ -1,0 +1,24 @@
+; ---------------------------------------------------------------------------
+; Powers of two by doubling
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Compute 2^N by repeated doubling (no multiply needed).
+;
+; Algorithm:
+;   result = 1
+;   repeat N times:  result = result + result
+;
+; Registers: R1 = N, R2 = result.
+; With N = 10 the result is 1024 = 0x0400 in R2.
+
+        LIL  R1, 10         ; N = 10
+        LIL  R2, 1          ; result = 2^0 = 1
+
+loop:   BZ   R1, done
+        ADD  R2, R2, R2     ; result *= 2
+        ADDI R1, -1
+        JMP  loop
+
+done:   HLT                 ; R2 = 1024

@@ -1,0 +1,45 @@
+; ---------------------------------------------------------------------------
+; Primality test
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Primality test: is R1 prime?  -> R2 = 1 (prime) or 0 (composite).
+;
+; Algorithm:
+;   numbers < 2 are not prime.
+;   for divisor d = 2 .. n-1:
+;       if d divides n: composite.
+;   if no divisor found: prime.
+;   (division is done by repeated subtraction.)
+;
+; Registers: R1 = n, R3 = divisor, R4 = remainder, R5 = scratch, R2 = result.
+; The demo tests n = 17, which is prime, so R2 = 1 after HLT.
+
+        LIL  R1, 17         ; n (try other values here)
+        LIL  R6, 2
+        SUB  R5, R1, R6
+        BN   R5, composite  ; n < 2  -> not prime
+
+        LIL  R3, 2          ; divisor = 2
+
+outer:  SUB  R5, R3, R1
+        BZ   R5, prime      ; divisor reached n -> prime
+        MOV  R4, R1         ; remainder = n
+
+mod_loop:
+        BZ   R4, composite  ; remainder 0 -> divisible -> composite
+        BN   R4, next_div   ; remainder negative -> not divisible
+        SUB  R4, R4, R3
+        JMP  mod_loop
+
+next_div:
+        ADDI R3, 1
+        JMP  outer
+
+prime:  LIL  R2, 1
+        HLT
+
+composite:
+        LIL  R2, 0
+        HLT

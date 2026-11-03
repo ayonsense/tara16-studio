@@ -1,0 +1,53 @@
+; ---------------------------------------------------------------------------
+; Bubble sort
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Bubble sort for a byte array.
+;
+; Algorithm:
+;   repeat N-1 passes; on each pass walk the array swapping any
+;   adjacent pair that is out of order.  Equal elements are left in
+;   place, so the sort is stable.
+;
+; Input contract:
+;   A[0..255] is already stored at byte addresses 0x0400..0x04FF.
+;   The 256 unsigned byte values are sorted ascending in place.
+;   This program does not seed or otherwise overwrite the input before sorting.
+;
+; Registers: R0 = base, R1 = N, R2 = passes left, R3 = compares left,
+;            R4 = pointer, R5/R6 = pair, R7 = compare scratch.
+
+        LIL  R0, 0
+        LIH  R0, 4          ; base = 0x0400
+        LIL  R1, 0
+        LIH  R1, 1          ; N = 0x0100 = 256 bytes
+
+sort:   MOV  R2, R1
+        BZ   R2, done       ; N == 0
+        ADDI R2, -1
+        BZ   R2, done       ; N == 1
+
+outer:  BZ   R2, done       ; no passes left
+        MOV  R3, R2         ; comparisons this pass
+        MOV  R4, R0         ; pointer = base
+
+inner:  BZ   R3, nextpass
+        LDB  R5, 0(R4)      ; A[j]
+        LDB  R6, 1(R4)      ; A[j+1]
+        SUB  R7, R5, R6
+        BN   R7, noswap     ; A[j] < A[j+1]
+        BZ   R7, noswap     ; A[j] == A[j+1]  (stable)
+        STB  R6, 0(R4)      ; swap
+        STB  R5, 1(R4)
+
+noswap: ADDI R4, 1
+        ADDI R3, -1
+        JMP  inner
+
+nextpass:
+        ADDI R2, -1
+        JMP  outer
+
+done:   HLT

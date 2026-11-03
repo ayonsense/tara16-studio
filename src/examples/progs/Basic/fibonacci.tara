@@ -1,0 +1,29 @@
+; ---------------------------------------------------------------------------
+; Iterative Fibonacci  (F(10) = 55)
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Iterative Fibonacci:  F(10) = 55.
+;
+; Algorithm (classic two-variable sweep):
+;   a = 0, b = 1
+;   repeat n times:  (a, b) = (b, a + b)
+;   result = a  =  F(n)
+;
+; Registers: R2 = a, R3 = b, R4 = a+b, R5 = counter.
+; After HLT, R6 = 55 = 0x0037.
+
+        LIL  R2, 0          ; a = F(0)
+        LIL  R3, 1          ; b = F(1)
+        LIL  R5, 10         ; count = 10
+
+loop:   BZ   R5, done
+        ADD  R4, R2, R3     ; t = a + b
+        MOV  R2, R3         ; a = b
+        MOV  R3, R4         ; b = t
+        ADDI R5, -1         ; count--
+        JMP  loop
+
+done:   MOV  R6, R2         ; R6 = F(10) = 55
+        HLT

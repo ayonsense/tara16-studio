@@ -1,0 +1,41 @@
+; ---------------------------------------------------------------------------
+; Collatz (3n+1) step counter
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Collatz (3n+1) sequence: count the steps needed to reach 1.
+;
+; Algorithm:
+;   steps = 0
+;   while n != 1:
+;       if n even:  n = n / 2
+;       else:       n = 3n + 1
+;       steps += 1
+;
+; Registers: R1 = n, R2 = steps, R3 = const 1, R5 = parity, R6 = scratch.
+; Starting from n = 7 it takes 16 steps, so R2 = 16 after HLT.
+
+        LIL  R1, 7          ; n = 7
+        LIL  R2, 0          ; steps = 0
+        LIL  R3, 1          ; constant 1
+
+loop:   SUB  R4, R1, R3
+        BZ   R4, done       ; n == 1 -> finished
+        MOV  R5, R1
+        AND  R5, R5, R3     ; R5 = n & 1
+        BZ   R5, even
+
+        ; odd:  n = 3n + 1
+        MOV  R6, R1
+        ADD  R1, R1, R1     ; 2n
+        ADD  R1, R1, R6     ; 3n
+        ADDI R1, 1          ; 3n + 1
+        JMP  next
+
+even:   SHR  R1, 1          ; n = n / 2
+
+next:   ADDI R2, 1          ; steps++
+        JMP  loop
+
+done:   HLT                 ; R2 = 16

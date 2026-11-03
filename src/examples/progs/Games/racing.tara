@@ -1,0 +1,482 @@
+; ---------------------------------------------------------------------------
+; Racing game
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; ======================================================================
+; RACING - byte-aligned two-lane F1 avoidance game for TARA
+; ======================================================================
+; Display:
+;   64x64 pixels, 1 bit/pixel, at 0x0600-0x07FF.
+;   y=0 is the bottom of the screen; y=63 is the top.
+;
+; Keyboard at 0x05FF:
+;   bit2 = LEFT  (Left arrow / A)     bit3 = RIGHT (Right arrow / D)
+;   bit4 = QUIT  (Q)
+;
+; Performance design:
+;   The road/gallery background is drawn once. Cars are 8-pixel-wide byte
+;   sprites, so every car row is a single STB. Opponent cars move downward
+;   by 2 pixels per frame; each normal frame erases two old rows and draws
+;   two new rows per opponent.
+;
+; Road layout by byte column:
+;   byte 0: left gallery       byte 1: left road edge
+;   byte 2: left lane car      byte 3/4: center divider
+;   byte 5: right lane car     byte 6: right road edge
+;   byte 7: right gallery
+;
+; State at 0x0400:
+;   +0 word player_lane   0 left, 1 right
+;   +2 word enemy1_lane
+;   +4 word enemy1_y      bottom row of 8-row enemy sprite
+;   +6 word enemy2_lane
+;   +8 word enemy2_y
+; ======================================================================
+
+        LIL  R7, 240
+        LIH  R7, 5          ; stack top = 0x05F0
+
+        CALL draw_scene
+
+        ; Initial state.
+        LIL  R5, 0
+        LIH  R5, 4
+        LIL  R0, 0
+        STW  R0, 0(R5)      ; player starts left
+        STW  R0, 2(R5)      ; enemy1 starts left
+        LIL  R0, 56
+        STW  R0, 4(R5)
+        LIL  R0, 1
+        STW  R0, 6(R5)      ; enemy2 starts right
+        LIL  R0, 34
+        STW  R0, 8(R5)
+
+        ; Initial sprites.
+        LIL  R0, 0
+        LIL  R1, 4
+        CALL draw_car_up
+        LIL  R0, 0
+        LIL  R1, 56
+        CALL draw_car_down
+        LIL  R0, 1
+        LIL  R1, 34
+        CALL draw_car_down
+
+main:
+        ; ---- keyboard ------------------------------------------------
+        LIL  R0, 0xFF
+        LIH  R0, 0x05
+        LDB  R1, 0(R0)
+
+        LIL  R2, 16
+        AND  R2, R1, R2     ; Q quits
+        BZ   R2, no_quit
+        JMP  game_over
+no_quit:
+        ; LEFT key: switch to lane 0 only if not already there.
+        LIL  R2, 4
+        AND  R2, R1, R2
+        BZ   R2, try_right
+        LIL  R5, 0
+        LIH  R5, 4
+        LDW  R3, 0(R5)
+        BZ   R3, try_right
+        MOV  R0, R3
+        LIL  R1, 4
+        CALL erase_car
+        LIL  R0, 0
+        LIL  R5, 0
+        LIH  R5, 4
+        STW  R0, 0(R5)
+        LIL  R1, 4
+        CALL draw_car_up
+        JMP  keys_done
+
+try_right:
+        ; RIGHT key: switch to lane 1 only if not already there.
+        LIL  R2, 8
+        AND  R2, R1, R2
+        BZ   R2, keys_done
+        LIL  R5, 0
+        LIH  R5, 4
+        LDW  R3, 0(R5)
+        LIL  R4, 1
+        SUB  R4, R3, R4
+        BZ   R4, keys_done
+        MOV  R0, R3
+        LIL  R1, 4
+        CALL erase_car
+        LIL  R0, 1
+        LIL  R5, 0
+        LIH  R5, 4
+        STW  R0, 0(R5)
+        LIL  R1, 4
+        CALL draw_car_up
+keys_done:
+
+        LIL  R5, 2
+        LIH  R5, 4          ; enemy1 struct at 0x0402
+        CALL update_enemy
+        LIL  R5, 6
+        LIH  R5, 4          ; enemy2 struct at 0x0406
+        CALL update_enemy
+
+        CALL check_collisions
+        JMP  main
+
+
+; ---- draw_scene ------------------------------------------------------
+; Draw static road/gallery once. The two side galleries use 2x2-pixel
+; checkerboard blocks. The center divider is dashed: 10 rows on,
+; then 10 rows blank:
+;   rows 0-1: CC 80 00 01 80 00 01 33
+;   rows 2-3: 33 80 00 01 80 00 01 CC
+; Car lane bytes are byte 2 and byte 5, both zero in the background.
+draw_scene:
+        PUSH R6
+        LIL  R0, 0x00
+        LIH  R0, 0x06
+        LIL  R1, 64
+        LIL  R3, 0          ; row-pair parity toggles every two rows
+        LIL  R4, 2          ; rows remaining in this checker row-pair
+        LIL  R5, 10         ; rows remaining in divider dash segment
+        LIL  R6, 1          ; divider visible flag
+scene_row:
+        BZ   R3, scene_gallery_a
+        LIL  R2, 0x33
+        STB  R2, 0(R0)
+        JMP  scene_road
+scene_gallery_a:
+        LIL  R2, 0xCC
+        STB  R2, 0(R0)
+scene_road:
+        LIL  R2, 0x80
+        STB  R2, 1(R0)
+        LIL  R2, 0
+        STB  R2, 2(R0)
+        BZ   R6, scene_divider_blank
+        LIL  R2, 0x01
+        STB  R2, 3(R0)
+        LIL  R2, 0x80
+        STB  R2, 4(R0)
+        JMP  scene_after_divider
+scene_divider_blank:
+        LIL  R2, 0
+        STB  R2, 3(R0)
+        STB  R2, 4(R0)
+scene_after_divider:
+        LIL  R2, 0
+        STB  R2, 5(R0)
+        LIL  R2, 0x01
+        STB  R2, 6(R0)
+        BZ   R3, scene_gallery_b
+        LIL  R2, 0xCC
+        STB  R2, 7(R0)
+        JMP  scene_advance
+scene_gallery_b:
+        LIL  R2, 0x33
+        STB  R2, 7(R0)
+scene_advance:
+        ADDI R0, 8
+        ADDI R4, -1
+        BZ   R4, scene_toggle
+        JMP  scene_count
+scene_toggle:
+        LIL  R4, 2
+        LIL  R2, 1
+        SUB  R3, R2, R3
+scene_count:
+        ADDI R5, -1
+        BZ   R5, scene_dash_toggle
+        JMP  scene_row_count
+scene_dash_toggle:
+        LIL  R5, 10
+        LIL  R2, 1
+        SUB  R6, R2, R6
+scene_row_count:
+        ADDI R1, -1
+        BZ   R1, scene_done
+        JMP  scene_row
+scene_done:
+        POP  R6
+        RET
+
+
+; ---- lane_col --------------------------------------------------------
+; Input R0 = lane 0/1. Output R2 = byte column 2/5.
+lane_col:
+        BZ   R0, lane_left
+        LIL  R2, 5
+        RET
+lane_left:
+        LIL  R2, 2
+        RET
+
+
+; ---- row_addr --------------------------------------------------------
+; Input R1 = y, R2 = byte column. Output R3 = framebuffer byte address.
+row_addr:
+        MOV  R3, R1
+        SHL  R3, 3
+        ADD  R3, R3, R2
+        LIL  R4, 0x00
+        LIH  R4, 0x06
+        ADD  R3, R3, R4
+        RET
+
+
+; ---- erase_car -------------------------------------------------------
+; Input R0 = lane, R1 = bottom y. Erases 8 byte rows.
+erase_car:
+        PUSH R6
+        CALL lane_col
+        CALL row_addr
+        LIL  R4, 0
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        STB  R4, 0(R3)
+        POP  R6
+        RET
+
+
+; ---- draw_car_up -----------------------------------------------------
+; Input R0 = lane, R1 = bottom y. Player car points upward.
+draw_car_up:
+        PUSH R6
+        CALL lane_col
+        CALL row_addr
+        LIL  R4, 0xFF       ; rear wing
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0xDB       ; rear wheels and body
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x7E       ; main body
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x3C       ; cockpit
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x7E       ; side pods
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x18       ; nose
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x3C       ; front wing support
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x18       ; nose tip
+        STB  R4, 0(R3)
+        POP  R6
+        RET
+
+
+; ---- draw_car_down ---------------------------------------------------
+; Input R0 = lane, R1 = bottom y. Opponent car points downward.
+draw_car_down:
+        PUSH R6
+        CALL lane_col
+        CALL row_addr
+        LIL  R4, 0x18       ; nose tip
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x3C       ; front wing support
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x18       ; nose
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x7E       ; side pods
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x3C       ; cockpit
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x7E       ; main body
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0xDB       ; rear wheels and body
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0xFF       ; rear wing
+        STB  R4, 0(R3)
+        POP  R6
+        RET
+
+
+; ---- update_enemy ----------------------------------------------------
+; Input R5 points to enemy struct: +0 lane, +2 y.
+; Normal frame: erase old top two rows, y -= 2, draw new bottom two rows.
+update_enemy:
+        LDW  R0, 2(R5)      ; old y
+        BZ   R0, enemy_recycle
+
+        LDW  R1, 0(R5)      ; lane
+        BZ   R1, ue_left
+        LIL  R2, 5
+        JMP  ue_col_done
+ue_left:
+        LIL  R2, 2
+ue_col_done:
+        ; erase old top rows y+6 and y+7
+        MOV  R3, R0
+        ADDI R3, 6
+        SHL  R3, 3
+        ADD  R3, R3, R2
+        LIL  R4, 0x00
+        LIH  R4, 0x06
+        ADD  R3, R3, R4
+        LIL  R4, 0
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        STB  R4, 0(R3)
+
+        ; move downward by 2
+        ADDI R0, -2
+        STW  R0, 2(R5)
+
+        ; draw new bottom rows of the downward-facing car
+        MOV  R3, R0
+        SHL  R3, 3
+        ADD  R3, R3, R2
+        LIL  R4, 0x00
+        LIH  R4, 0x06
+        ADD  R3, R3, R4
+        LIL  R4, 0x18
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x3C
+        STB  R4, 0(R3)
+        RET
+
+        ; At y=0, erase the full old car, flip lane, and redraw at the top.
+enemy_recycle:
+        LDW  R1, 0(R5)
+        LIL  R4, 0
+        LIH  R4, 4
+        LDW  R0, 0(R4)
+        SUB  R0, R0, R1
+        BZ   R0, er_hit
+        BZ   R1, er_left
+        LIL  R2, 5
+        JMP  er_col_done
+er_hit:
+        JMP  game_over
+er_left:
+        LIL  R2, 2
+er_col_done:
+        LIL  R3, 0x00
+        LIH  R3, 0x06
+        ADD  R3, R3, R2
+        LIL  R4, 0
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        STB  R4, 0(R3)
+
+        ; lane = 1 - lane
+        LDW  R0, 0(R5)
+        LIL  R1, 1
+        SUB  R0, R1, R0
+        STW  R0, 0(R5)
+        LIL  R1, 56
+        STW  R1, 2(R5)
+
+        ; draw full downward car in new lane at y=56
+        BZ   R0, er_new_left
+        LIL  R2, 5
+        JMP  er_new_col_done
+er_new_left:
+        LIL  R2, 2
+er_new_col_done:
+        LIL  R3, 0xC0
+        LIH  R3, 0x07       ; 0x07C0 = 0x0600 + 56*8
+        ADD  R3, R3, R2
+        LIL  R4, 0x18
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x3C
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x18
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x7E
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x3C
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0x7E
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0xDB
+        STB  R4, 0(R3)
+        ADDI R3, 8
+        LIL  R4, 0xFF
+        STB  R4, 0(R3)
+        RET
+
+
+; ---- check_collisions -----------------------------------------------
+; Player car occupies y=4..11. An enemy in the same lane collides once
+; its bottom y is less than 12.
+check_collisions:
+        LIL  R5, 0
+        LIH  R5, 4
+        LDW  R1, 0(R5)      ; player lane
+
+        LDW  R0, 2(R5)      ; enemy1 lane
+        SUB  R2, R0, R1
+        BZ   R2, cc_enemy1_y
+        JMP  cc_enemy2
+cc_enemy1_y:
+        LDW  R0, 4(R5)
+        LIL  R3, 12
+        SLT  R2, R0, R3
+        BZ   R2, cc_enemy2
+        JMP  game_over
+
+cc_enemy2:
+        LDW  R0, 6(R5)      ; enemy2 lane
+        SUB  R2, R0, R1
+        BZ   R2, cc_enemy2_y
+        RET
+cc_enemy2_y:
+        LDW  R0, 8(R5)
+        LIL  R3, 12
+        SLT  R2, R0, R3
+        BZ   R2, cc_done
+        JMP  game_over
+cc_done:
+        RET
+
+
+game_over:
+        HLT

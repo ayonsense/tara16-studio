@@ -1,0 +1,50 @@
+; ---------------------------------------------------------------------------
+; Linear search
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Linear search over an unsorted byte array.
+;
+; Algorithm:
+;   for index = 0 .. N-1:
+;       if array[index] == key: return index
+;   return 0xFFFF if the key is absent.
+;
+; Demo: search for 9 in [5, 8, 1, 9, 3, 7] at 0x0400  ->  index 3.
+; Registers: R0 = base, R1 = N, R2 = key, R3 = index, R5/R6 = scratch.
+
+        LIL  R0, 0
+        LIH  R0, 4          ; base = 0x0400
+        LIL  R3, 5
+        STB  R3, 0(R0)
+        LIL  R3, 8
+        STB  R3, 1(R0)
+        LIL  R3, 1
+        STB  R3, 2(R0)
+        LIL  R3, 9
+        STB  R3, 3(R0)
+        LIL  R3, 3
+        STB  R3, 4(R0)
+        LIL  R3, 7
+        STB  R3, 5(R0)
+
+        LIL  R1, 6          ; N = 6
+        LIL  R2, 9          ; key = 9
+        LIL  R3, 0          ; index = 0
+
+search: SUB  R4, R3, R1
+        BZ   R4, notfound   ; index == N -> not present
+        ADD  R5, R0, R3
+        LDB  R6, 0(R5)      ; R6 = array[index]
+        SUB  R6, R6, R2
+        BZ   R6, found      ; array[index] == key
+        ADDI R3, 1          ; index++
+        JMP  search
+
+notfound:
+        LIL  R3, 255
+        LIH  R3, 255        ; R3 = 0xFFFF (not found)
+        HLT
+
+found:  HLT                 ; R3 = matching index = 3

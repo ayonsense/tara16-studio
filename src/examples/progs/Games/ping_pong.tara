@@ -1,0 +1,509 @@
+; ---------------------------------------------------------------------------
+; Ping Pong game
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; ======================================================================
+; PING PONG (single paddle)  —  TARA Assembly demo  (CS2300, IIT Madras)
+; ======================================================================
+; A one-wall pong. A 2x2 ball bounces off the top, left and right brick walls.
+; The bottom is open and defended by the player's bat, which sits along the
+; bottom edge and slides LEFT / RIGHT. Miss the ball and it is GAME OVER.
+;
+; Flicker-free, drawn the same lean way as Snake: the walls, bat and ball
+; are drawn ONCE at start-up, then every frame only the pixels that actually
+; change are touched. The bat is left untouched unless it moves (only its
+; leading/trailing column is updated); the 2x2 ball is redrawn by SETTING the
+; new square first and then CLEARING just the trailing pixels, so no pixel is
+; ever briefly blanked. Plays smoothly at ~1-2 kHz, like Snake.
+;
+; ── Display ───────────────────────────────────────────────────────────
+;   64x64 pixels, 1 bit/pixel, at 0x0600-0x07FF (row-major, MSB first).
+;   Pixel (x,y):  addr = 0x0600 + y*8 + (x/8) ,  bit mask = 0x80 >> (x&7).
+;   Framebuffer row y=0 is drawn at the BOTTOM, so larger y is higher up.
+;
+; ── Arena ─────────────────────────────────────────────────────────────
+;   6-pixel brick-textured walls on the TOP (y=58..63), LEFT (x=0..5)
+;   and RIGHT (x=58..63). The bottom edge is OPEN.
+;   Ball travel: x in [6,56] (2px wide), y in [4,56] (2px tall);
+;   reaching y<=3 is the paddle plane.
+;
+; ── Bat (player) ──────────────────────────────────────────────────────
+;   12 px wide, 3 px tall, with a raised center cap. The collision width
+;   remains 12 px. Left end = paddle_x in [6,46].
+;
+; ── Keyboard  (live one-hot bits at 0x05FF) ───────────────────────────
+;   bit2 = LEFT     bit3 = RIGHT     bit4 = QUIT
+;   Open the Display tab, click the canvas, then steer with the arrow keys
+;   (or A / D).
+;
+; ── Data layout  (R7 = 0x0410 base, signed word offsets) ──────────────
+;   -16 ball_x  -14 ball_y  -12 ball_vx  -10 ball_vy
+;    -8 paddle_x -6 score     0 new_bx    2 new_by
+;   Bit-mask table [0x80,0x40,..,0x01] at 0x0420 (indexed by x&7).
+;
+; ── Tip ───────────────────────────────────────────────────────────────
+;   Open the Display tab; clock ~1000-2000 Hz gives a smooth pace.
+; ======================================================================
+
+; ── Variable base ─────────────────────────────────────────────────────
+    LIL  R7, 0x10
+    LIH  R7, 0x04            ; R7 = 0x0410
+
+; ── Clear the whole display (512 bytes 0x0600-0x07FF) ─────────────────
+    LIL  R0, 0x00
+    LIH  R0, 0x06
+    LIL  R1, 0x00
+    LIH  R1, 0x02
+    LIL  R2, 0
+clr_disp:
+    STB  R2, 0(R0)
+    ADDI R0, 1
+    ADDI R1, -1
+    BZ   R1, clr_disp_done
+    JMP  clr_disp
+clr_disp_done:
+
+; ── Build the bit-mask table at 0x0420: 0x80,0x40,...,0x01 ────────────
+    LIL  R0, 0x20
+    LIH  R0, 0x04
+    LIL  R2, 0x80
+    STB  R2, 0(R0)
+    LIL  R2, 0x40
+    STB  R2, 1(R0)
+    LIL  R2, 0x20
+    STB  R2, 2(R0)
+    LIL  R2, 0x10
+    STB  R2, 3(R0)
+    LIL  R2, 0x08
+    STB  R2, 4(R0)
+    LIL  R2, 0x04
+    STB  R2, 5(R0)
+    LIL  R2, 0x02
+    STB  R2, 6(R0)
+    LIL  R2, 0x01
+    STB  R2, 7(R0)
+
+; ── Draw brick-textured walls: left/right 6 px, top 6 px. Bottom open. ─
+    LIL  R0, 0x00
+    LIH  R0, 0x06            ; 0x0600 (row 0)
+    LIL  R1, 0               ; row counter
+wall_sides:
+    MOV  R4, R1
+    LIL  R5, 3
+    AND  R4, R4, R5          ; every fourth row is a horizontal brick seam
+    BZ   R4, wall_side_seam
+
+    MOV  R4, R1
+    LIL  R5, 4
+    AND  R4, R4, R5          ; shift vertical seams every brick course
+    BZ   R4, wall_side_a
+
+wall_side_b:
+    LIL  R2, 0x94            ; left: edge + shifted vertical seam
+    STB  R2, 0(R0)
+    LIL  R2, 0x25            ; right: shifted seam + edge
+    STB  R2, 7(R0)
+    JMP  wall_side_next
+
+wall_side_a:
+    LIL  R2, 0xA4            ; left: edge + vertical seam + edge
+    STB  R2, 0(R0)
+    LIL  R2, 0x29            ; right: edge + vertical seam + edge
+    STB  R2, 7(R0)
+    JMP  wall_side_next
+
+wall_side_seam:
+    LIL  R2, 0xFC            ; left horizontal seam, x = 0..5
+    STB  R2, 0(R0)
+    LIL  R2, 0x3F            ; right horizontal seam, x = 58..63
+    STB  R2, 7(R0)
+
+wall_side_next:
+    ADDI R0, 8
+    ADDI R1, 1
+    LIL  R2, 64
+    SLT  R3, R1, R2
+    BZ   R3, wall_sides_done
+    JMP  wall_sides
+wall_sides_done:
+
+    ; Top brick wall rows y=58..63. Horizontal rows are solid seams;
+    ; body rows use shifted vertical seams to suggest staggered bricks.
+    LIL  R0, 0xD0
+    LIH  R0, 0x07            ; row y=58
+    LIL  R1, 8
+    LIL  R2, 0xFF
+wall_top_58:
+    STB  R2, 0(R0)
+    ADDI R0, 1
+    ADDI R1, -1
+    BZ   R1, wall_top_59_setup
+    JMP  wall_top_58
+
+wall_top_59_setup:
+    LIL  R1, 8
+    LIL  R2, 0x88
+wall_top_59:
+    STB  R2, 0(R0)
+    ADDI R0, 1
+    ADDI R1, -1
+    BZ   R1, wall_top_60_setup
+    JMP  wall_top_59
+
+wall_top_60_setup:
+    LIL  R1, 8
+    LIL  R2, 0x88
+wall_top_60:
+    STB  R2, 0(R0)
+    ADDI R0, 1
+    ADDI R1, -1
+    BZ   R1, wall_top_61_setup
+    JMP  wall_top_60
+
+wall_top_61_setup:
+    LIL  R1, 8
+    LIL  R2, 0xFF
+wall_top_61:
+    STB  R2, 0(R0)
+    ADDI R0, 1
+    ADDI R1, -1
+    BZ   R1, wall_top_62_setup
+    JMP  wall_top_61
+
+wall_top_62_setup:
+    LIL  R1, 8
+    LIL  R2, 0x22
+wall_top_62:
+    STB  R2, 0(R0)
+    ADDI R0, 1
+    ADDI R1, -1
+    BZ   R1, wall_top_63_setup
+    JMP  wall_top_62
+
+wall_top_63_setup:
+    LIL  R0, 0xF8
+    LIH  R0, 0x07
+    LIL  R1, 8
+    LIL  R2, 0xFF
+wall_top_63:
+    STB  R2, 0(R0)
+    ADDI R0, 1
+    ADDI R1, -1
+    BZ   R1, wall_top_done
+    JMP  wall_top_63
+wall_top_done:
+
+; ── Initial state ─────────────────────────────────────────────────────
+    LIL  R0, 20
+    STW  R0, -16(R7)         ; ball_x = 20
+    LIL  R0, 24
+    STW  R0, -14(R7)         ; ball_y = 24
+    LIL  R0, 1
+    STW  R0, -12(R7)         ; ball_vx = +1
+    LIL  R0, 1
+    STW  R0, -10(R7)         ; ball_vy = +1 (heading up first)
+    LIL  R0, 26
+    STW  R0, -8(R7)          ; paddle_x = 26  (covers x 26..37)
+    LIL  R0, 0
+    STW  R0, -6(R7)          ; score = 0
+
+    ; draw the bat ONCE: solid base rows plus raised center cap
+    LIL  R0, 26
+bat_init:
+    LIL  R1, 1
+    CALL set_px
+    LIL  R1, 2
+    CALL set_px
+    ADDI R0, 1
+    LIL  R2, 38
+    SLT  R3, R0, R2
+    BZ   R3, bat_init_done
+    JMP  bat_init
+bat_init_done:
+    LIL  R0, 28
+bat_cap_init:
+    LIL  R1, 3
+    CALL set_px
+    ADDI R0, 1
+    LIL  R2, 36
+    SLT  R3, R0, R2
+    BZ   R3, bat_cap_init_done
+    JMP  bat_cap_init
+bat_cap_init_done:
+
+    ; draw the 2x2 ball ONCE at (20,24)
+    LIL  R0, 20
+    LIL  R1, 24
+    CALL set_px
+    LIL  R0, 21
+    LIL  R1, 24
+    CALL set_px
+    LIL  R0, 20
+    LIL  R1, 25
+    CALL set_px
+    LIL  R0, 21
+    LIL  R1, 25
+    CALL set_px
+    JMP  main
+
+; ======================================================================
+;  MAIN GAME LOOP  (touch only what changes — no full redraws)
+; ======================================================================
+main:
+    ; ── A. Keyboard → move the bat by 1 px (incremental, flicker-free) ─
+    LIL  R0, 0xFF
+    LIH  R0, 0x05
+    LDB  R1, 0(R0)           ; live key bits
+
+    LIL  R2, 16
+    AND  R2, R1, R2          ; QUIT
+    BZ   R2, pp_no_quit
+    JMP  game_over
+pp_no_quit:
+
+    ; LEFT (bit2): move left if paddle_x > 6
+    LIL  R2, 4
+    AND  R2, R1, R2
+    BZ   R2, pp_try_right
+    LDW  R3, -8(R7)          ; R3 = paddle_x (one load, never reloaded)
+    LIL  R2, 6
+    SLT  R4, R2, R3          ; 6 < paddle_x  (room to go left)
+    BZ   R4, pp_keys_done
+    ; new column appears at paddle_x-1 ; old column leaves at paddle_x+11
+    ; R0 is preserved by set/clr_px; chain x through R0 with ADDI.
+    ; R3 is clobbered by every call, so paddle_x is reloaded at the end.
+    MOV  R0, R3
+    ADDI R0, -1              ; R0 = px-1
+    LIL  R1, 1
+    CALL set_px              ; set(px-1, 1) — R0 stays px-1
+    LIL  R1, 2
+    CALL set_px              ; set(px-1, 2) — R0 stays px-1
+    ADDI R0, 2               ; R0 = px+1  (new cap left)
+    LIL  R1, 3
+    CALL set_px              ; set(px+1, 3) — R0 stays px+1
+    ADDI R0, 10              ; R0 = px+11  (trailing right edge)
+    LIL  R1, 1
+    CALL clr_px              ; clr(px+11, 1) — R0 stays px+11
+    LIL  R1, 2
+    CALL clr_px              ; clr(px+11, 2) — R0 stays px+11
+    ADDI R0, -2              ; R0 = px+9  (old cap right)
+    LIL  R1, 3
+    CALL clr_px              ; clr(px+9, 3)
+    LDW  R3, -8(R7)          ; reload paddle_x — R3 was clobbered by set/clr_px
+    ADDI R3, -1
+    STW  R3, -8(R7)          ; paddle_x--
+    JMP  pp_keys_done
+
+pp_try_right:
+    ; RIGHT (bit3): move right if paddle_x < 46
+    LIL  R2, 8
+    AND  R2, R1, R2
+    BZ   R2, pp_keys_done
+    LDW  R3, -8(R7)          ; R3 = paddle_x (one load, never reloaded)
+    LIL  R2, 46
+    SLT  R4, R3, R2          ; paddle_x < 46
+    BZ   R4, pp_keys_done
+    ; new column appears at paddle_x+12 ; old column leaves at paddle_x
+    ; R0 is preserved by set/clr_px; chain x through R0 with ADDI.
+    ; R3 is clobbered by every call, so paddle_x is reloaded at the end.
+    MOV  R0, R3
+    ADDI R0, 12              ; R0 = px+12  (new right edge)
+    LIL  R1, 1
+    CALL set_px              ; set(px+12, 1) — R0 stays px+12
+    LIL  R1, 2
+    CALL set_px              ; set(px+12, 2) — R0 stays px+12
+    ADDI R0, -2              ; R0 = px+10  (new cap right)
+    LIL  R1, 3
+    CALL set_px              ; set(px+10, 3) — R0 stays px+10
+    ADDI R0, -10             ; R0 = px     (trailing left edge)
+    LIL  R1, 1
+    CALL clr_px              ; clr(px, 1) — R0 stays px
+    LIL  R1, 2
+    CALL clr_px              ; clr(px, 2) — R0 stays px
+    ADDI R0, 2               ; R0 = px+2   (old cap left)
+    LIL  R1, 3
+    CALL clr_px              ; clr(px+2, 3)
+    LDW  R3, -8(R7)          ; reload paddle_x — R3 was clobbered by set/clr_px
+    ADDI R3, 1
+    STW  R3, -8(R7)          ; paddle_x++
+pp_keys_done:
+
+    ; ── B. Ball physics → new_x in R0, new_y in R1 ────────────────────
+    LDW  R0, -16(R7)
+    LDW  R2, -12(R7)
+    ADD  R0, R0, R2         ; new_x = ball_x + vx
+    LDW  R1, -14(R7)
+    LDW  R2, -10(R7)
+    ADD  R1, R1, R2         ; new_y = ball_y + vy
+
+    ; left wall (x < 6)
+    LIL  R2, 6
+    SLT  R3, R0, R2
+    BZ   R3, ph_x_hi
+    LIL  R0, 6
+    LIL  R2, 1
+    STW  R2, -12(R7)        ; vx = +1
+    JMP  ph_x_done
+ph_x_hi:
+    ; right wall (x > 56)
+    LIL  R2, 56
+    SLT  R3, R2, R0
+    BZ   R3, ph_x_done
+    LIL  R0, 56
+    LIL  R2, 0xFF
+    LIH  R2, 0xFF
+    STW  R2, -12(R7)        ; vx = -1
+ph_x_done:
+
+    ; top wall (y > 56)
+    LIL  R2, 56
+    SLT  R3, R2, R1
+    BZ   R3, ph_y_done
+    LIL  R1, 56
+    LIL  R2, 0xFF
+    LIH  R2, 0xFF
+    STW  R2, -10(R7)        ; vy = -1
+ph_y_done:
+
+    ; bottom / paddle plane (y <= 3)
+    LIL  R2, 4
+    SLT  R3, R1, R2
+    BZ   R3, ph_bottom_done
+    ; left-miss: (new_x + 1) < paddle_x ?
+    MOV  R4, R0
+    ADDI R4, 1
+    LDW  R5, -8(R7)
+    SLT  R3, R4, R5
+    BZ   R3, ph_chk_right
+    JMP  game_over
+ph_chk_right:
+    ; right-miss: (paddle_x + 11) < new_x ?
+    LDW  R5, -8(R7)
+    ADDI R5, 11
+    SLT  R3, R5, R0
+    BZ   R3, ph_caught
+    JMP  game_over
+ph_caught:
+    LIL  R1, 4             ; bounce up above the raised paddle cap
+    LIL  R2, 1
+    STW  R2, -10(R7)       ; vy = +1
+    LDW  R2, -6(R7)
+    ADDI R2, 1
+    STW  R2, -6(R7)        ; score++
+ph_bottom_done:
+    STW  R0, 0(R7)         ; new_bx
+    STW  R1, 2(R7)         ; new_by
+
+    ; ── C. Draw the NEW 2x2 ball first (so no pixel is ever blanked) ───
+    ; set_px preserves R0 and R1, so chain all four pixels without reloading.
+    LDW  R0, 0(R7)
+    LDW  R1, 2(R7)
+    CALL set_px              ; (new_bx,   new_by  ) — R0,R1 preserved
+    ADDI R0, 1
+    CALL set_px              ; (new_bx+1, new_by  ) — R0,R1 preserved
+    ADDI R0, -1              ; restore new_bx
+    ADDI R1, 1
+    CALL set_px              ; (new_bx,   new_by+1) — R0,R1 preserved
+    ADDI R0, 1
+    CALL set_px              ; (new_bx+1, new_by+1)
+
+    ; ── D. Clear only the TRAILING pixels of the old ball ─────────────
+    ;   dx = new_x - old_x ; if non-zero, the vacated column is cleared.
+    LDW  R3, 0(R7)
+    LDW  R4, -16(R7)       ; R4 = old_x (reused below, no extra load)
+    SUB  R5, R3, R4        ; dx
+    BZ   R5, ball_no_col
+    LIL  R2, 0
+    SLT  R3, R2, R5        ; dx > 0 ?
+    MOV  R0, R4            ; old_x still in R4 — no memory reload needed
+    BZ   R3, col_is_right
+    JMP  col_have          ; dx>0 -> trailing column = old_x
+col_is_right:
+    ADDI R0, 1             ; dx<0 -> trailing column = old_x+1
+col_have:
+    LDW  R1, -14(R7)       ; old_y
+    CALL clr_px            ; clr_px preserves R1 — no reload between the two
+    ADDI R1, 1
+    CALL clr_px
+ball_no_col:
+    ;   dy = new_y - old_y ; if non-zero, the vacated row is cleared.
+    LDW  R3, 2(R7)
+    LDW  R4, -14(R7)       ; R4 = old_y (reused below, no extra load)
+    SUB  R5, R3, R4        ; dy
+    BZ   R5, ball_no_row
+    LIL  R2, 0
+    SLT  R3, R2, R5        ; dy > 0 ?
+    MOV  R1, R4            ; old_y still in R4 — no memory reload needed
+    BZ   R3, row_is_top
+    JMP  row_have          ; dy>0 -> trailing row = old_y
+row_is_top:
+    ADDI R1, 1             ; dy<0 -> trailing row = old_y+1
+row_have:
+    LDW  R0, -16(R7)       ; old_x
+    CALL clr_px            ; clr_px preserves R0 — no reload between the two
+    ADDI R0, 1
+    CALL clr_px
+ball_no_row:
+
+    ; ── E. Commit new ball position ───────────────────────────────────
+    LDW  R0, 0(R7)
+    STW  R0, -16(R7)
+    LDW  R0, 2(R7)
+    STW  R0, -14(R7)
+
+    JMP  main
+
+; ======================================================================
+;  Pixel helpers — address = 0x0600 + y*8 + x/8 ; mask = table[x&7]
+;    in: R0 = x, R1 = y ; preserve R0,R1 ; clobber R2,R3,R4,R5 ; link R6
+; ======================================================================
+set_px:
+    MOV  R2, R1
+    SHL  R2, 3
+    MOV  R3, R0
+    SHR  R3, 3
+    ADD  R2, R2, R3
+    LIL  R3, 0x00
+    LIH  R3, 0x06
+    ADD  R2, R2, R3         ; R2 = byte address
+    MOV  R3, R0
+    LIL  R4, 7
+    AND  R3, R3, R4
+    LIL  R4, 0x20
+    LIH  R4, 0x04
+    ADD  R4, R4, R3
+    LDB  R5, 0(R4)         ; R5 = mask
+    LDB  R3, 0(R2)
+    OR   R3, R3, R5
+    STB  R3, 0(R2)
+    RET
+
+clr_px:
+    MOV  R2, R1
+    SHL  R2, 3
+    MOV  R3, R0
+    SHR  R3, 3
+    ADD  R2, R2, R3
+    LIL  R3, 0x00
+    LIH  R3, 0x06
+    ADD  R2, R2, R3
+    MOV  R3, R0
+    LIL  R4, 7
+    AND  R3, R3, R4
+    LIL  R4, 0x20
+    LIH  R4, 0x04
+    ADD  R4, R4, R3
+    LDB  R5, 0(R4)
+    LDB  R3, 0(R2)
+    NOT  R4, R5
+    AND  R3, R3, R4
+    STB  R3, 0(R2)
+    RET
+
+; ======================================================================
+;  GAME OVER  —  freeze the final frame
+; ======================================================================
+game_over:
+    HLT

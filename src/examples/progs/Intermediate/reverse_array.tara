@@ -1,0 +1,41 @@
+; ---------------------------------------------------------------------------
+; Reverse an array in place
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Reverse a byte array in place.
+;
+; Algorithm (two pointers walking inward):
+;   lo = first element, hi = last element
+;   while lo < hi:  swap(*lo, *hi); lo++; hi--
+;
+; Input contract:
+;   A[0..255] is already stored at byte addresses 0x0400..0x04FF.
+;   The 256 unsigned byte values are reversed in place.
+;   This program does not seed or otherwise overwrite the input before reversing.
+;
+; Registers: R0 = base, R1 = N, R2 = lo, R3 = hi,
+;            R4 = comparison scratch, R5/R6 = swap scratch.
+
+        LIL  R0, 0
+        LIH  R0, 4          ; base = 0x0400
+        LIL  R1, 0
+        LIH  R1, 1          ; N = 0x0100 = 256 bytes
+
+        MOV  R2, R0         ; lo = base
+        ADD  R3, R0, R1
+        ADDI R3, -1         ; hi = base + N - 1 = 0x04FF
+
+rev:    SUB  R4, R3, R2
+        BN   R4, done       ; hi < lo  -> finished
+        BZ   R4, done       ; hi == lo -> middle element, finished
+        LDB  R5, 0(R2)      ; tmp_lo = *lo
+        LDB  R6, 0(R3)      ; tmp_hi = *hi
+        STB  R6, 0(R2)      ; *lo = tmp_hi
+        STB  R5, 0(R3)      ; *hi = tmp_lo
+        ADDI R2, 1          ; lo++
+        ADDI R3, -1         ; hi--
+        JMP  rev
+
+done:   HLT

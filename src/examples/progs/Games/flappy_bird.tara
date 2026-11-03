@@ -1,0 +1,556 @@
+; ---------------------------------------------------------------------------
+; Flappy Bird game
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; ======================================================================
+; FLAPPY BIRD  —  TARA Assembly demo  (CS2300, IIT Madras)
+; ======================================================================
+; A small bird sprite holds a fixed column and falls under gravity. Tap FLAP
+; to rise. Textured pipes scroll in from the right with a gap to fly through; touch a
+; pipe or the ground and it is GAME OVER.
+;
+; ── Display ───────────────────────────────────────────────────────────
+;   64x64 pixels, 1 bit/pixel, at 0x0600-0x07FF (row-major, MSB first).
+;   Pixel (x,y):  addr = 0x0600 + y*8 + (x/8) ,  bit mask = 0x80 >> (x&7).
+;   Framebuffer row y=0 is the BOTTOM of the screen, y=63 the top, so
+;   "up" means a LARGER y. A solid ground line is drawn along row 0.
+;
+; ── Why it stays smooth (no flicker) ──────────────────────────────────
+;   Pipes are NOT redrawn every frame. As a pipe slides left by 1 px we
+;   only ERASE the single column it vacates on the right and DRAW the single
+;   new column on the left; the body in between is untouched. Collisions are
+;   computed from game state (arithmetic), never by reading pixels, so the
+;   bird is drawn last and on top without ambiguity. Same lean style as
+;   Snake and Ping Pong — tall pipes cost ~550 instr/frame, so it plays best
+;   a little faster than those two (~4-8 kHz).
+;
+; ── Keyboard  (live one-hot bits at 0x05FF) ───────────────────────────
+;   bit0 = FLAP (Up arrow / W)     bit4 = QUIT (Q)
+;   Open the Display tab, click the canvas, then tap Up to flap.
+;
+; ── Pipe gaps ─────────────────────────────────────────────────────────
+;   Successive gap positions (bottom row of the gap) are pre-seeded as bytes
+;   from 0x0500; 0xFF means "wrap back to 0x0500". Gap height is fixed (20).
+;
+; ── Data layout  (R7 = 0x0410 base, signed word offsets) ──────────────
+;   -16 bird_y  -14 bird_vy  -12 pipe_x  -10 gap_lo  -8 gap_hi
+;    -6 score    -4 gap_ptr   -2 new_y     0 erase_x  2 lead_x
+;    +4 draw_y   +6 draw_mode  +8 draw_link  +10 old_y
+;    +12 bird_dy +14 trail_link
+;   Bit-mask table [0x80,0x40,..,0x01] at 0x0420 (indexed by x&7).
+;   Geometry: bird sprite spans x=10..13 and y..y+1, pipe width = 6,
+;   gap height = 20.
+;
+; ── Tip ───────────────────────────────────────────────────────────────
+;   Open the Display tab; clock ~4000-8000 Hz gives a smooth, playable pace.
+; ======================================================================
+
+; ── Variable base ─────────────────────────────────────────────────────
+    LIL  R7, 0x10
+    LIH  R7, 0x04            ; R7 = 0x0410
+
+; ── Clear the whole display (512 bytes 0x0600-0x07FF) ─────────────────
+    LIL  R0, 0x00
+    LIH  R0, 0x06
+    LIL  R1, 0x00
+    LIH  R1, 0x02
+    LIL  R2, 0
+clr_disp:
+    STB  R2, 0(R0)
+    ADDI R0, 1
+    ADDI R1, -1
+    BZ   R1, clr_disp_done
+    JMP  clr_disp
+clr_disp_done:
+
+; ── Build the bit-mask table at 0x0420: 0x80,0x40,...,0x01 ────────────
+    LIL  R0, 0x20
+    LIH  R0, 0x04
+    LIL  R2, 0x80
+    STB  R2, 0(R0)
+    LIL  R2, 0x40
+    STB  R2, 1(R0)
+    LIL  R2, 0x20
+    STB  R2, 2(R0)
+    LIL  R2, 0x10
+    STB  R2, 3(R0)
+    LIL  R2, 0x08
+    STB  R2, 4(R0)
+    LIL  R2, 0x04
+    STB  R2, 5(R0)
+    LIL  R2, 0x02
+    STB  R2, 6(R0)
+    LIL  R2, 0x01
+    STB  R2, 7(R0)
+
+; ── Draw the ground (row y=0): 8 solid bytes at 0x0600-0x0607 ─────────
+    LIL  R0, 0x00
+    LIH  R0, 0x06
+    LIL  R1, 8
+    LIL  R2, 0xFF
+ground:
+    STB  R2, 0(R0)
+    ADDI R0, 1
+    ADDI R1, -1
+    BZ   R1, ground_done
+    JMP  ground
+ground_done:
+
+; ── Seed pipe-gap queue at 0x0500 (gap bottom rows), 0xFF = wrap ──────
+    LIL  R0, 0x00
+    LIH  R0, 0x05
+    LIL  R2, 8
+    STB  R2, 0(R0)
+    LIL  R2, 24
+    STB  R2, 1(R0)
+    LIL  R2, 16
+    STB  R2, 2(R0)
+    LIL  R2, 32
+    STB  R2, 3(R0)
+    LIL  R2, 12
+    STB  R2, 4(R0)
+    LIL  R2, 28
+    STB  R2, 5(R0)
+    LIL  R2, 20
+    STB  R2, 6(R0)
+    LIL  R2, 0xFF
+    STB  R2, 7(R0)
+
+; ── Initial game state ────────────────────────────────────────────────
+    LIL  R0, 32
+    STW  R0, -16(R7)         ; bird_y = 32
+    LIL  R0, 0
+    STW  R0, -14(R7)         ; bird_vy = 0
+    LIL  R0, 64
+    STW  R0, -12(R7)         ; pipe_x = 64 (off-screen right; scrolls in)
+    LIL  R0, 8
+    STW  R0, -10(R7)         ; gap_lo = 8
+    LIL  R0, 27
+    STW  R0, -8(R7)          ; gap_hi = 27 (gap_lo + 19)
+    LIL  R0, 0
+    STW  R0, -6(R7)          ; score = 0
+    LIL  R0, 0x01
+    LIH  R0, 0x05
+    STW  R0, -4(R7)          ; gap_ptr = 0x0501 (next after gap_lo=8)
+
+    ; draw the bird once with anchor y = 32
+    LIL  R1, 32
+    LIL  R3, 1
+    CALL draw_bird
+    JMP  main
+
+; ======================================================================
+;  MAIN GAME LOOP
+; ======================================================================
+main:
+    ; ── A. Read keys ──────────────────────────────────────────────────
+    LIL  R0, 0xFF
+    LIH  R0, 0x05
+    LDB  R1, 0(R0)           ; key bits
+    LIL  R2, 16
+    AND  R2, R1, R2          ; QUIT (bit4)
+    BZ   R2, fb_no_quit
+    JMP  game_over
+fb_no_quit:
+
+    ; ── B. Physics: gravity, flap, clamp, integrate ──────────────────
+    LDW  R0, -14(R7)         ; vy
+    ADDI R0, -1             ; gravity
+    LIL  R2, 1
+    AND  R2, R1, R2         ; FLAP (bit0)
+    BZ   R2, fb_no_flap
+    LIL  R0, 3             ; flap impulse: vy = +3
+fb_no_flap:
+    LIL  R2, 0xFD
+    LIH  R2, 0xFF          ; -3
+    SLT  R4, R0, R2        ; vy < -3 ?
+    BZ   R4, fb_vy_ok
+    LIL  R0, 0xFD
+    LIH  R0, 0xFF          ; clamp vy to -3 (terminal velocity)
+fb_vy_ok:
+    STW  R0, -14(R7)
+    LDW  R3, -16(R7)
+    ADD  R3, R3, R0        ; new_y = bird_y + vy
+    ; ceiling: if new_y > 62 -> clamp 62, vy = 0
+    LIL  R2, 62
+    SLT  R4, R2, R3
+    BZ   R4, fb_no_ceil
+    LIL  R3, 62
+    LIL  R0, 0
+    STW  R0, -14(R7)
+fb_no_ceil:
+    ; ground: if new_y < 1 -> dead
+    LIL  R2, 1
+    SLT  R4, R3, R2
+    BZ   R4, fb_no_ground
+    JMP  game_over
+fb_no_ground:
+    STW  R3, -2(R7)        ; stash new_y
+
+    ; ── C. Pipe scroll — erase the vacated right column ───────────────
+    LDW  R0, -12(R7)
+    ADDI R0, 5            ; old right edge = pipe_x + W-1  (W=6)
+    LIL  R2, 0
+    SLT  R4, R0, R2       ; < 0 ?
+    BZ   R4, fb_er_lo
+    JMP  fb_erase_skip
+fb_er_lo:
+    LIL  R2, 63
+    SLT  R4, R2, R0       ; > 63 ?
+    BZ   R4, fb_do_erase
+    JMP  fb_erase_skip
+fb_do_erase:
+    STW  R0, 0(R7)        ; erase_x
+    LDW  R0, 0(R7)
+    LIL  R1, 1
+    LDW  R2, -10(R7)
+    ADDI R2, -1          ; gap_lo - 1
+    LIL  R3, 0
+    CALL vline           ; clear bottom segment
+    LDW  R0, 0(R7)
+    LDW  R1, -8(R7)
+    ADDI R1, 1           ; gap_hi + 1
+    LIL  R2, 62
+    LIL  R3, 0
+    CALL vline           ; clear top segment
+fb_erase_skip:
+
+    ; pipe_x -= 1
+    LDW  R0, -12(R7)
+    ADDI R0, -1
+    STW  R0, -12(R7)
+
+    ; ── D. Recycle if the pipe has fully left the screen ──────────────
+    LDW  R0, -12(R7)
+    ADDI R0, 5           ; right edge after move
+    LIL  R2, 0
+    SLT  R4, R0, R2      ; right edge < 0 ?
+    BZ   R4, fb_no_recyc
+    LIL  R0, 64
+    STW  R0, -12(R7)     ; pipe_x = 64
+    LDW  R0, -6(R7)
+    ADDI R0, 1
+    STW  R0, -6(R7)      ; score++
+    LDW  R0, -4(R7)      ; gap_ptr
+    LDB  R1, 0(R0)
+    LIL  R2, 0xFF
+    SUB  R2, R1, R2      ; value == 0xFF -> wrap
+    BZ   R2, fb_gap_wrap
+    JMP  fb_gap_have
+fb_gap_wrap:
+    LIL  R0, 0x00
+    LIH  R0, 0x05        ; 0x0500
+    LDB  R1, 0(R0)
+fb_gap_have:
+    STW  R1, -10(R7)     ; gap_lo
+    MOV  R2, R1
+    ADDI R2, 19
+    STW  R2, -8(R7)      ; gap_hi
+    ADDI R0, 1
+    STW  R0, -4(R7)      ; gap_ptr += 1
+    JMP  fb_pipe_done
+
+    ; ── E. Otherwise draw the new leading column ──────────────────────
+fb_no_recyc:
+    LDW  R0, -12(R7)     ; pipe_x (new left edge)
+    LIL  R2, 0
+    SLT  R4, R0, R2      ; < 0 ?
+    BZ   R4, fb_ld_lo
+    JMP  fb_pipe_done
+fb_ld_lo:
+    LIL  R2, 63
+    SLT  R4, R2, R0      ; > 63 ?
+    BZ   R4, fb_do_draw
+    JMP  fb_pipe_done
+fb_do_draw:
+    STW  R0, 2(R7)       ; lead_x
+    LDW  R0, 2(R7)
+    LIL  R1, 1
+    LDW  R2, -10(R7)
+    ADDI R2, -1          ; gap_lo - 1
+    LIL  R3, 1
+    CALL pipe_col        ; draw textured bottom pipe
+    LDW  R0, 2(R7)
+    LDW  R1, -10(R7)
+    ADDI R1, -2
+    LDW  R2, -10(R7)
+    ADDI R2, -1
+    LIL  R3, 1
+    CALL vline           ; solid lower pipe lip at the gap
+    LDW  R0, 2(R7)
+    LDW  R1, -8(R7)
+    ADDI R1, 1           ; gap_hi + 1
+    LIL  R2, 62
+    LIL  R3, 1
+    CALL pipe_col        ; draw textured top pipe
+    LDW  R0, 2(R7)
+    LDW  R1, -8(R7)
+    ADDI R1, 1
+    LDW  R2, -8(R7)
+    ADDI R2, 2
+    LIL  R3, 1
+    CALL vline           ; solid upper pipe lip at the gap
+fb_pipe_done:
+
+    ; ── F. Collision (arithmetic): bird sprite inside a solid pipe? ───
+    LDW  R0, -12(R7)     ; pipe_x
+    LIL  R2, 5
+    SLT  R4, R0, R2      ; pipe_x + 5 < bird_left(10) -> no x-overlap
+    BZ   R4, fb_xa
+    JMP  fb_no_collide
+fb_xa:
+    LIL  R2, 13
+    SLT  R4, R2, R0      ; pipe_x > bird_right(13) -> no x-overlap
+    BZ   R4, fb_xover
+    JMP  fb_no_collide
+fb_xover:
+    LDW  R3, -2(R7)      ; new_y
+    LDW  R2, -10(R7)     ; gap_lo
+    SLT  R4, R3, R2      ; new_y < gap_lo -> hit bottom pipe
+    BZ   R4, fb_chk_top
+    JMP  game_over
+fb_chk_top:
+    LDW  R2, -8(R7)      ; gap_hi
+    ADDI R3, 1           ; bird top = new_y + 1
+    SLT  R4, R2, R3      ; bird top > gap_hi -> hit top pipe
+    BZ   R4, fb_no_collide
+    JMP  game_over
+fb_no_collide:
+
+    ; ── G. Draw the bird sprite ──────────────────────────────────────
+    LDW  R0, -2(R7)
+    LDW  R1, -16(R7)
+    SUB  R2, R0, R1      ; new_y - old_y
+    BZ   R2, fb_no_move
+    LDW  R1, -2(R7)
+    LIL  R3, 1
+    CALL draw_bird       ; draw new first
+    LDW  R1, -16(R7)
+    LDW  R2, -2(R7)
+    SUB  R2, R2, R1      ; dy = new_y - old_y
+    CALL clear_bird_trail
+fb_no_move:
+    LDW  R0, -2(R7)
+    STW  R0, -16(R7)     ; commit bird_y = new_y
+
+    JMP  main
+
+; ======================================================================
+;  pipe_col  —  set a decorative pipe column in framebuffer column x
+;    in:  R0 = x, R1 = y0, R2 = y1 (inclusive)
+;    rows where y&3 == 2 are left blank, creating horizontal etched bands.
+;    does nothing if y1 < y0.  clobbers R0-R5 ; link in R6.
+; ======================================================================
+pipe_col:
+    SLT  R4, R2, R1       ; y1 < y0 ?
+    BZ   R4, pc_go
+    RET
+pc_go:
+    MOV  R4, R1
+    SHL  R4, 3           ; y0 * 8
+    MOV  R5, R0
+    SHR  R5, 3           ; x / 8
+    ADD  R4, R4, R5
+    LIL  R5, 0x00
+    LIH  R5, 0x06
+    ADD  R4, R4, R5      ; R4 = byte address of (x, y0)
+    LIL  R5, 7
+    AND  R5, R0, R5      ; x & 7
+    LIL  R0, 0x20
+    LIH  R0, 0x04
+    ADD  R0, R0, R5
+    LDB  R5, 0(R0)       ; R5 = mask
+    SUB  R0, R2, R1
+    ADDI R0, 1           ; R0 = row count
+    MOV  R2, R1          ; R2 = current y
+pc_loop:
+    MOV  R1, R2
+    LIL  R3, 3
+    AND  R1, R1, R3
+    ADDI R1, -2
+    BZ   R1, pc_skip_set
+    LDB  R1, 0(R4)
+    OR   R1, R1, R5
+    STB  R1, 0(R4)
+pc_skip_set:
+    ADDI R4, 8           ; next row up (8 bytes per row)
+    ADDI R2, 1
+    ADDI R0, -1
+    BZ   R0, pc_done
+    JMP  pc_loop
+pc_done:
+    RET
+
+; ======================================================================
+;  draw_bird  —  draw/erase the 5-pixel bird sprite anchored at y
+;    in:  R1 = bird_y, R3 = mode (1 set / 0 clear)
+;    shape:
+;      y+1:   x=12,13
+;      y:     x=10,11,12
+;    saves R6 because it calls vline. clobbers R0-R5.
+; ======================================================================
+draw_bird:
+    STW  R1, 4(R7)        ; draw_y
+    STW  R3, 6(R7)        ; draw_mode
+    STW  R6, 8(R7)        ; caller link
+
+    LIL  R0, 10
+    LDW  R1, 4(R7)
+    LDW  R2, 4(R7)
+    LDW  R3, 6(R7)
+    CALL vline
+
+    LIL  R0, 11
+    LDW  R1, 4(R7)
+    LDW  R2, 4(R7)
+    LDW  R3, 6(R7)
+    CALL vline
+
+    LIL  R0, 12
+    LDW  R1, 4(R7)
+    LDW  R2, 4(R7)
+    ADDI R2, 1
+    LDW  R3, 6(R7)
+    CALL vline
+
+    LIL  R0, 13
+    LDW  R1, 4(R7)
+    ADDI R1, 1
+    LDW  R2, 4(R7)
+    ADDI R2, 1
+    LDW  R3, 6(R7)
+    CALL vline
+
+    LDW  R6, 8(R7)
+    RET
+
+; ======================================================================
+;  clear_bird_trail  —  clear old bird pixels not reused by the new sprite
+;    in: R1 = old_y, R2 = dy (new_y - old_y)
+;    saves R6 because it calls vline/draw_bird. clobbers R0-R5.
+; ======================================================================
+clear_bird_trail:
+    STW  R1, 10(R7)       ; old_y
+    STW  R2, 12(R7)       ; bird_dy
+    STW  R6, 14(R7)       ; caller link
+
+    LDW  R0, 12(R7)
+    ADDI R0, -1
+    BZ   R0, cbt_up_one
+    LDW  R0, 12(R7)
+    ADDI R0, 1
+    BZ   R0, cbt_down_one
+
+    LDW  R1, 10(R7)
+    LIL  R3, 0
+    CALL draw_bird        ; no overlap for larger jumps
+    JMP  cbt_done
+
+cbt_up_one:
+    ; Moving up by 1 reuses only old pixel (12, old_y+1).
+    LIL  R0, 10
+    LDW  R1, 10(R7)
+    LDW  R2, 10(R7)
+    LIL  R3, 0
+    CALL vline
+    LIL  R0, 11
+    LDW  R1, 10(R7)
+    LDW  R2, 10(R7)
+    LIL  R3, 0
+    CALL vline
+    LIL  R0, 12
+    LDW  R1, 10(R7)
+    LDW  R2, 10(R7)
+    LIL  R3, 0
+    CALL vline
+    LIL  R0, 13
+    LDW  R1, 10(R7)
+    ADDI R1, 1
+    LDW  R2, 10(R7)
+    ADDI R2, 1
+    LIL  R3, 0
+    CALL vline
+    JMP  cbt_done
+
+cbt_down_one:
+    ; Moving down by 1 reuses only old pixel (12, old_y).
+    LIL  R0, 10
+    LDW  R1, 10(R7)
+    LDW  R2, 10(R7)
+    LIL  R3, 0
+    CALL vline
+    LIL  R0, 11
+    LDW  R1, 10(R7)
+    LDW  R2, 10(R7)
+    LIL  R3, 0
+    CALL vline
+    LIL  R0, 12
+    LDW  R1, 10(R7)
+    ADDI R1, 1
+    LDW  R2, 10(R7)
+    ADDI R2, 1
+    LIL  R3, 0
+    CALL vline
+    LIL  R0, 13
+    LDW  R1, 10(R7)
+    ADDI R1, 1
+    LDW  R2, 10(R7)
+    ADDI R2, 1
+    LIL  R3, 0
+    CALL vline
+
+cbt_done:
+    LDW  R6, 14(R7)
+    RET
+
+; ======================================================================
+;  vline  —  set or clear a vertical run in framebuffer column x
+;    in:  R0 = x, R1 = y0, R2 = y1 (inclusive), R3 = mode (1 set / 0 clear)
+;    does nothing if y1 < y0.  clobbers R0-R5 ; link in R6.
+; ======================================================================
+vline:
+    SLT  R4, R2, R1       ; y1 < y0 ?
+    BZ   R4, vl_go
+    RET
+vl_go:
+    MOV  R4, R1
+    SHL  R4, 3           ; y0 * 8
+    MOV  R5, R0
+    SHR  R5, 3           ; x / 8
+    ADD  R4, R4, R5
+    LIL  R5, 0x00
+    LIH  R5, 0x06
+    ADD  R4, R4, R5      ; R4 = byte address of (x, y0)
+    LIL  R5, 7
+    AND  R5, R0, R5      ; x & 7
+    LIL  R0, 0x20
+    LIH  R0, 0x04
+    ADD  R0, R0, R5
+    LDB  R5, 0(R0)       ; R5 = mask
+    SUB  R0, R2, R1
+    ADDI R0, 1           ; R0 = row count
+vl_loop:
+    LDB  R1, 0(R4)
+    BZ   R3, vl_clr
+    OR   R1, R1, R5
+    JMP  vl_store
+vl_clr:
+    MOV  R2, R5
+    NOT  R2, R2
+    AND  R1, R1, R2
+vl_store:
+    STB  R1, 0(R4)
+    ADDI R4, 8           ; next row down (8 bytes per row)
+    ADDI R0, -1
+    BZ   R0, vl_done
+    JMP  vl_loop
+vl_done:
+    RET
+
+; ======================================================================
+;  GAME OVER  —  freeze the final frame
+; ======================================================================
+game_over:
+    HLT

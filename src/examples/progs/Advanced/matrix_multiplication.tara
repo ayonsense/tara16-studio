@@ -1,0 +1,230 @@
+; ---------------------------------------------------------------------------
+; 3x3 matrix multiplication  (C = A x B)
+; TARA assembly example  |  CS2300 - Foundations of Computer System Design
+; Copyright (c) 2026 Ayon Chakraborty, IIT Madras.
+; ---------------------------------------------------------------------------
+
+; Matrix multiplication: C = A x B for two 3x3 matrices.
+;
+; Data layout:
+;   A is stored as 9 bytes in row-major order at 0x0400.
+;   B is stored as 9 bytes in row-major order at 0x0420.
+;   C is stored as 9 words in row-major order at 0x0440.
+;
+; Demo input:
+;   A = [ 1 2 3 ]      B = [ 9 8 7 ]
+;       [ 4 5 6 ]          [ 6 5 4 ]
+;       [ 7 8 9 ]          [ 3 2 1 ]
+;
+; Expected output words at 0x0440..0x0451:
+;   C = [  30  24  18 ]
+;       [  84  69  54 ]
+;       [ 138 114  90 ]
+
+; ---- Demo setup: matrix A at 0x0400 -------------------------------
+        LIL  R0, 0
+        LIH  R0, 4          ; R0 = A base = 0x0400
+
+        LIL  R3, 1
+        STB  R3, 0(R0)
+        LIL  R3, 2
+        STB  R3, 1(R0)
+        LIL  R3, 3
+        STB  R3, 2(R0)
+        LIL  R3, 4
+        STB  R3, 3(R0)
+        LIL  R3, 5
+        STB  R3, 4(R0)
+        LIL  R3, 6
+        STB  R3, 5(R0)
+        LIL  R3, 7
+        STB  R3, 6(R0)
+        LIL  R3, 8
+        STB  R3, 7(R0)
+        LIL  R3, 9
+        STB  R3, 8(R0)
+
+; ---- Demo setup: matrix B at 0x0420 -------------------------------
+        LIL  R1, 32
+        LIH  R1, 4          ; R1 = B base = 0x0420
+
+        LIL  R3, 9
+        STB  R3, 0(R1)
+        LIL  R3, 8
+        STB  R3, 1(R1)
+        LIL  R3, 7
+        STB  R3, 2(R1)
+        LIL  R3, 6
+        STB  R3, 3(R1)
+        LIL  R3, 5
+        STB  R3, 4(R1)
+        LIL  R3, 4
+        STB  R3, 5(R1)
+        LIL  R3, 3
+        STB  R3, 6(R1)
+        LIL  R3, 2
+        STB  R3, 7(R1)
+        LIL  R3, 1
+        STB  R3, 8(R1)
+
+; ---- Matrix multiply -----------------------------------------------
+; R0 = A base, R1 = B base, R2 = C output pointer
+; R3 = A element, R4 = B element, R5 = product, R6 = sum
+
+multiply:
+        LIL  R2, 64
+        LIH  R2, 4          ; R2 = C base = 0x0440
+
+; C[0][0] = A00*B00 + A01*B10 + A02*B20 = 30
+        LIL  R6, 0
+        LDB  R3, 0(R0)
+        LDB  R4, 0(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 1(R0)
+        LDB  R4, 3(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 2(R0)
+        LDB  R4, 6(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        STW  R6, 0(R2)
+        ADDI R2, 2
+
+; C[0][1] = 24
+        LIL  R6, 0
+        LDB  R3, 0(R0)
+        LDB  R4, 1(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 1(R0)
+        LDB  R4, 4(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 2(R0)
+        LDB  R4, 7(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        STW  R6, 0(R2)
+        ADDI R2, 2
+
+; C[0][2] = 18
+        LIL  R6, 0
+        LDB  R3, 0(R0)
+        LDB  R4, 2(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 1(R0)
+        LDB  R4, 5(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 2(R0)
+        LDB  R4, 8(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        STW  R6, 0(R2)
+        ADDI R2, 2
+
+; C[1][0] = 84
+        LIL  R6, 0
+        LDB  R3, 3(R0)
+        LDB  R4, 0(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 4(R0)
+        LDB  R4, 3(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 5(R0)
+        LDB  R4, 6(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        STW  R6, 0(R2)
+        ADDI R2, 2
+
+; C[1][1] = 69
+        LIL  R6, 0
+        LDB  R3, 3(R0)
+        LDB  R4, 1(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 4(R0)
+        LDB  R4, 4(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 5(R0)
+        LDB  R4, 7(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        STW  R6, 0(R2)
+        ADDI R2, 2
+
+; C[1][2] = 54
+        LIL  R6, 0
+        LDB  R3, 3(R0)
+        LDB  R4, 2(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 4(R0)
+        LDB  R4, 5(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 5(R0)
+        LDB  R4, 8(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        STW  R6, 0(R2)
+        ADDI R2, 2
+
+; C[2][0] = 138
+        LIL  R6, 0
+        LDB  R3, 6(R0)
+        LDB  R4, 0(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 7(R0)
+        LDB  R4, 3(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 8(R0)
+        LDB  R4, 6(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        STW  R6, 0(R2)
+        ADDI R2, 2
+
+; C[2][1] = 114
+        LIL  R6, 0
+        LDB  R3, 6(R0)
+        LDB  R4, 1(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 7(R0)
+        LDB  R4, 4(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 8(R0)
+        LDB  R4, 7(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        STW  R6, 0(R2)
+        ADDI R2, 2
+
+; C[2][2] = 90
+        LIL  R6, 0
+        LDB  R3, 6(R0)
+        LDB  R4, 2(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 7(R0)
+        LDB  R4, 5(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        LDB  R3, 8(R0)
+        LDB  R4, 8(R1)
+        MUL  R5, R3, R4
+        ADD  R6, R6, R5
+        STW  R6, 0(R2)
+
+done:   HLT
