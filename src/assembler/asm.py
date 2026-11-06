@@ -76,6 +76,14 @@ def _parse_operands(ops_str, mnem):
     return operands
 
 
+def _validate_range(value, minimum, maximum, operand_name):
+    if not minimum <= value <= maximum:
+        raise AssemblerError(
+            f"{operand_name} must be between {minimum} and {maximum}, got {value}"
+        )
+    return value
+
+
 def _label_rel(target_s, iaddr, label_map):
     """Resolve a branch/jump target to a signed word-offset relative to iaddr+2."""
     if target_s in label_map:
@@ -183,12 +191,19 @@ def assemble(source):
             elif mnem in ('LIL', 'LIH', 'ADDI'):
                 rd = parse_reg(operands[0])
                 imm = parse_int(operands[1], label_map)
+
+                if mnem == 'ADDI':
+                    imm = _validate_range(imm, -128, 127, 'ADDI immediate')
+                else:
+                    imm = _validate_range(imm, -128, 255, f'{mnem} immediate')
+
                 word = _encode_f3(opcode, rd, imm)
 
             elif mnem in ('SHL', 'SHR'):
                 # rd, shamt
                 rd = parse_reg(operands[0])
                 shamt = parse_int(operands[1], label_map)
+                shamt = _validate_range(shamt, 0, 31, 'shift amount')
                 word = _encode_f3(opcode, rd, shamt)
 
             elif mnem in ('LDW', 'LDB'):
@@ -196,6 +211,7 @@ def assemble(source):
                 rd = parse_reg(operands[0])
                 off_s, base_s = parse_mem(operands[1])
                 off = parse_int(off_s, label_map)
+                off = _validate_range(off, -16, 15, 'memory offset')
                 rbase = parse_reg(base_s)
                 word = _encode_f4(opcode, rd, rbase, off)
 
@@ -204,16 +220,19 @@ def assemble(source):
                 rs = parse_reg(operands[0])
                 off_s, base_s = parse_mem(operands[1])
                 off = parse_int(off_s, label_map)
+                off = _validate_range(off, -16, 15, 'memory offset')
                 rbase = parse_reg(base_s)
                 word = _encode_f4(opcode, rs, rbase, off)
 
             elif mnem in ('BZ', 'BN'):
                 rtest = parse_reg(operands[0])
                 rel = _label_rel(operands[1], iaddr, label_map)
+                rel = _validate_range(rel, -128, 127, 'branch offset')
                 word = _encode_f5(opcode, rtest, rel)
 
             elif mnem in ('JMP', 'CALL'):
                 rel = _label_rel(operands[0], iaddr, label_map)
+                rel = _validate_range(rel, -1024, 1023, 'jump offset')
                 word = _encode_f6(opcode, rel)
 
             elif mnem in ('PUSH', 'POP'):
