@@ -233,6 +233,10 @@ class TaraSimWindow(QMainWindow):
             self.status.showMessage("Compilation is finishing. Please close Studio again when it completes.")
             event.ignore()
             return
+        if self.fpga_panel and not self.fpga_panel.shutdown(timeout_ms=100):
+            self.status.showMessage("FPGA transfer is finishing. Please close Studio again when it completes.")
+            event.ignore()
+            return
         self.timer.stop()
         self._finish_usage_tracking()
         event.accept()
@@ -999,6 +1003,7 @@ def main():
     # OS-level Quit can bypass closeEvent; let the bounded compiler subprocess
     # finish before Qt destroys its worker thread in that case.
     app.aboutToQuit.connect(lambda: win.compiler_panel.shutdown(timeout_ms=35000))
+    app.aboutToQuit.connect(lambda: win.fpga_panel and win.fpga_panel.shutdown(timeout_ms=None))
     app.aboutToQuit.connect(win._finish_usage_tracking)
     win.showFullScreen()
     win.start_usage_tracking()

@@ -35,7 +35,7 @@ from PyQt5.QtWidgets import (
     QHeaderView, QStyle, QFrame, QAbstractItemView, QMessageBox, QDialog,
     QTextBrowser, QDialogButtonBox, QGraphicsDropShadowEffect, QStyledItemDelegate,
     QRadioButton, QButtonGroup, QShortcut, QMenuBar)
-from PyQt5.QtCore import Qt, QTimer, QSettings, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, QTimer, QSettings, pyqtSignal
 from PyQt5.QtGui import QFont, QColor, QBrush, QKeySequence
 
 from src.usage.examples import bundled_example, validate_example
@@ -164,15 +164,52 @@ class TaraLink:
     def _write_chunk(self, addr, words):
         p = b'W'+struct.pack('>HH', clamp_even_addr(addr), len(words))
         p += b''.join(struct.pack('>H', w & 0xFFFF) for w in words)
-        self.ser.write(p); return self.ser.read(1) == b'K'
+        written = self.ser.write(p)
+        if written != len(p):
+            raise IOError(f"short write @0x{addr:03X}: sent {written}/{len(p)} bytes")
+        return self.ser.read(1) == b'K'
     def write_words(self, addr, words):
-        addr = clamp_even_addr(addr); words = list(words)[:remaining_words(addr)]; off, ok = 0, True
+        addr = clamp_even_addr(addr); words = list(words)[:remaining_words(addr)]; off = 0
         while off < len(words):
             k = min(self.CHUNK, len(words)-off)
-            ok = self._write_chunk(addr+off*2, words[off:off+k]) and ok; off += k
-        return ok
-    def hold(self): self.ser.write(b'H')
-    def go(self):   self.ser.write(b'G')
+            if not self._write_chunk(addr+off*2, words[off:off+k]):
+                return False
+            off += k
+        return True
+    def hold(self):
+        if self.ser.write(b'H') != 1:
+            raise IOError("could not hold the FPGA CPU")
+    def go(self):
+        if self.ser.write(b'G') != 1:
+            raise IOError("could not start the FPGA CPU")
+
+
+class _SerialOperation(QThread):
+    """Keep UART transfers off Qt's event loop; never access widgets here."""
+
+    result = pyqtSignal(object)
+
+    def __init__(self, link, kind, *, addr=0, count=0, words=()):
+        super().__init__()
+        self.link = link
+        self.kind = kind
+        self.addr = addr
+        self.count = count
+        self.words = tuple(words)
+
+    def run(self):
+        try:
+            if self.kind == "read":
+                value = self.link.read_words(self.addr, self.count)
+            else:
+                self.link.hold()
+                if not self.link.write_words(0, self.words):
+                    raise IOError("FPGA did not acknowledge a program chunk; CPU remains held")
+                self.link.go()
+                value = len(self.words)
+            self.result.emit((self.kind, True, value))
+        except Exception as error:
+            self.result.emit((self.kind, False, str(error)))
 
 
 class SimulatorMemoryLink:
@@ -275,6 +312,10 @@ class FpgaMonitorPanel(QWidget):
         self.sim_link = SimulatorMemoryLink(simulator_cpu, on_simulator_memory_changed)
         self.link = self.serial_link
         self._on_simulator_program_loaded = on_simulator_program_loaded
+        self._serial_worker = None
+        self._pending_load = None
+        self._poll_resume = False
+        self._load_context = None
         self.prev = {}
         self.cell_pt = 16
         self.settings = QSettings("TARA-IITM", "MemoryMonitor")
@@ -398,7 +439,8 @@ class FpgaMonitorPanel(QWidget):
         c4, l4 = self._card()
         l4.addWidget(QLabel("Program (.tara)")); self.prog = QLineEdit(); l4.addWidget(self.prog, 1)
         l4.addWidget(self._btn("Browse", QStyle.SP_DirOpenIcon, "ghost", self._browse))
-        l4.addWidget(self._btn("Load && Run", QStyle.SP_MediaPlay, "run", self.load_run))
+        self.btn_load_run = self._btn("Load && Run", QStyle.SP_MediaPlay, "run", self.load_run)
+        l4.addWidget(self.btn_load_run)
         V.addWidget(c4)
 
         # references the full-screen toggle needs to pop the bundle out and back
@@ -853,10 +895,88 @@ class FpgaMonitorPanel(QWidget):
             if i >= 0: self.port.setCurrentIndex(i)
     def _status(self, txt, ok=True):
         self.status.setText(txt); self.status.setStyleSheet(f"color:{OKC if ok else DANGER};font-weight:700;")
+
+    def _serial_controls_busy(self, busy):
+        """Prevent a port switch or board reprogramming during UART I/O."""
+        for button in (self.btn_conn, self.mode_fpga, self.mode_sim,
+                       self.btn_program, self.btn_detect):
+            button.setEnabled(not busy)
+        self.btn_rescan.setEnabled(not busy and _HAVE_SERIAL and not self._using_simulator())
+        self.btn_load_run.setEnabled(not busy or self._load_context is None)
+
+    def _start_serial_operation(self, kind, *, addr=0, count=0, words=()):
+        """Run one UART transaction at a time without blocking the window."""
+        if self._serial_worker is not None:
+            return False
+        worker = _SerialOperation(self.serial_link, kind, addr=addr, count=count, words=words)
+        self._serial_worker = worker
+        self._serial_controls_busy(True)
+        worker.result.connect(self._serial_result)
+        worker.finished.connect(self._serial_finished)
+        worker.start()
+        return True
+
+    def _serial_result(self, result):
+        kind, ok, value = result
+        if kind == "read":
+            if ok:
+                addr, nbytes = self._serial_read_context
+                self._show_read_words(addr, nbytes, value)
+            else:
+                self._status(f"read error: {value}", ok=False)
+        elif ok:
+            count, source, usage_context = self._load_context
+            tag = "" if source == "file" else f" from {source}"
+            self._status(f"loaded {count} instructions{tag} @0x000 & running")
+            self.usage_event.emit("fpga_run", usage_context)
+        else:
+            self._poll_resume = False
+            # A failed transfer can leave the board held or disconnected.
+            # Show that automatic polling has stopped until the user retries.
+            self.auto.setChecked(False)
+            self._status(f"load error: {value}", ok=False)
+
+    def _serial_finished(self):
+        worker = self._serial_worker
+        self._serial_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        if self._pending_load is not None:
+            words, source, usage_context = self._pending_load
+            self._pending_load = None
+            self._start_serial_load(words, source, usage_context)
+            return
+        if self._load_context is not None:
+            self._load_context = None
+            self.btn_load_run.setEnabled(True)
+            if self._poll_resume and self.auto.isChecked() and self.link.is_open:
+                self.timer.start(max(100, self._int(self.interval.text(), 500)))
+            self._poll_resume = False
+        self._serial_controls_busy(False)
+
+    def _start_serial_load(self, words, source, usage_context):
+        self._load_context = (len(words), source, usage_context)
+        self._status(f"loading {len(words)} instructions to FPGA…")
+        self._start_serial_operation("load", words=words)
+
+    def shutdown(self, timeout_ms=100):
+        """Keep the UART worker alive until it finishes before closing Studio."""
+        self.timer.stop()
+        worker = self._serial_worker
+        if worker is not None and worker.isRunning() and not (
+            worker.wait() if timeout_ms is None else worker.wait(timeout_ms)
+        ):
+            return False
+        if self._pending_load is not None:
+            return False
+        self.serial_link.close()
+        return True
     def _conn_style(self, connected):
         self.btn_conn.setObjectName("danger" if connected else "")
         self.btn_conn.style().unpolish(self.btn_conn); self.btn_conn.style().polish(self.btn_conn)
     def _connect(self):
+        if self._serial_worker is not None:
+            self._status("wait for the current FPGA operation", ok=False); return
         if self.link.is_open:
             self.link.close(); self.btn_conn.setText("Connect")
             self.btn_conn.setIcon(self._ic(QStyle.SP_DialogYesButton)); self._conn_style(False)
@@ -914,8 +1034,19 @@ class FpgaMonitorPanel(QWidget):
         addr = clamp_even_addr(self._hex(self.start.text()))
         nbytes = max(2, min(self._int(self.count.text(), MEM_BYTES), MEM_BYTES - addr))
         n = (nbytes + 1) // 2
+        if not self._using_simulator() and isinstance(self.link, TaraLink):
+            # A missing UART reply can wait for a timeout on every chunk. Keep
+            # both the manual Read button and automatic polling responsive.
+            if self._serial_worker is None:
+                self._serial_read_context = (addr, nbytes)
+                self._start_serial_operation("read", addr=addr, count=n)
+            return
         try: words = self.link.read_words(addr, n)
         except Exception as e: self._status(f"read error: {e}", ok=False); return
+        self._show_read_words(addr, nbytes, words)
+
+    def _show_read_words(self, addr, nbytes, words):
+        """Paint a completed memory read on the Qt thread."""
         data = []
         for w in words: data += [(w >> 8) & 0xFF, w & 0xFF]
         data = data[:nbytes]
@@ -943,6 +1074,8 @@ class FpgaMonitorPanel(QWidget):
     # ---- writes ----
     def do_fill(self):
         if not self.link.is_open: self._status("not connected", ok=False); return
+        if self._serial_worker is not None:
+            self._status("wait for the current FPGA operation", ok=False); return
         addr = clamp_even_addr(self._hex(self.w_addr.text()))
         nbytes = max(2, min(self._int(self.w_n.text(), 2), MEM_BYTES - addr)); n = (nbytes + 1) // 2
         words = ([random.randint(0, 0xFFFF) for _ in range(n)] if self.rand.isChecked()
@@ -953,6 +1086,8 @@ class FpgaMonitorPanel(QWidget):
 
     def _poke(self, row, col):
         if not (1 <= col <= 16) or not self.link.is_open: return
+        if self._serial_worker is not None:
+            self._status("wait for the current FPGA operation", ok=False); return
         base = self._hex(self.tbl.item(row, 0).text()); ba = base + (col-1)
         cur = self.tbl.item(row, col).text()
         if not cur: return
@@ -1006,6 +1141,9 @@ class FpgaMonitorPanel(QWidget):
             self._status("not connected", ok=False); return False
         words = list(words)
         usage_context = validate_example(usage_context)
+        if len(words) > MEM_WORDS:
+            self._status(f"program has {len(words)} instructions; at most {MEM_WORDS} fit in memory", ok=False)
+            return False
         if self._using_simulator() and self._on_simulator_program_loaded:
             ok = bool(self._on_simulator_program_loaded(
                 words,
@@ -1021,17 +1159,35 @@ class FpgaMonitorPanel(QWidget):
             if ok:
                 self.usage_event.emit("simulator_run", usage_context)
             return ok
+        if not self._using_simulator() and isinstance(self.link, TaraLink):
+            if self._load_context is not None or self._pending_load is not None:
+                self._status("FPGA program load already in progress", ok=False)
+                return False
+            self._poll_resume = self.timer.isActive()
+            self.timer.stop()
+            if self._serial_worker is not None:
+                # An in-flight poll owns the UART until it completes. Queue
+                # the program instead of racing the same serial port.
+                self._pending_load = (words, source, usage_context)
+                self.btn_load_run.setEnabled(False)
+                self._status("waiting for memory read before loading program…")
+            else:
+                self._start_serial_load(words, source, usage_context)
+            return True
         try:
-            self.link.hold(); ok = self.link.write_words(0x000, words); self.link.go()
+            self.link.hold(); ok = self.link.write_words(0x000, words)
+            if ok:
+                self.link.go()
         except Exception as e:
             self._status(f"load error: {e}", ok=False); return False
+        if not ok:
+            self._status("load error: write not acknowledged; CPU remains held", ok=False)
+            return False
         self.do_read()
         tag = "" if source == "file" else f" from {source}"
-        self._status(f"loaded {len(words)} instructions{tag} @0x000 & running"
-                     + ("" if ok else " (write: no ack)"), ok=ok)
-        if ok:
-            self.usage_event.emit("simulator_run" if self._using_simulator() else "fpga_run", usage_context)
-        return ok
+        self._status(f"loaded {len(words)} instructions{tag} @0x000 & running")
+        self.usage_event.emit("simulator_run" if self._using_simulator() else "fpga_run", usage_context)
+        return True
 
     def _toggle_auto(self):
         if self.auto.isChecked(): self.timer.start(max(100, self._int(self.interval.text(), 500)))
