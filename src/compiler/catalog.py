@@ -183,10 +183,10 @@ EXAMPLES: tuple[Example, ...] = (
     ),
     _example(
         "Display", "draw_triangle", "Draw Triangle",
-        "Draw a filled 24-row stepped triangle using byte-wide blocks, increasing width every four rows.",
-        "Compile, load, and run, then open Display. The program clears the screen and draws rows 8..31 "
-        "with widths from one to six bytes (8 to 48 pixels).",
-        "R0 = 0. A filled triangle made of six four-row bands remains on the screen.",
+        "Draw a smooth filled triangle with 45-degree edges, using edge masks that grow one pixel per row.",
+        "Compile, load, and run, then open Display. The program clears the screen and draws rows 43 down "
+        "to 20. The apex is 2 pixels wide (x = 31..32); the base is 48 pixels wide (x = 8..55).",
+        "R0 = 0. A centred triangle with smooth one-pixel steps remains on the screen.",
     ),
     _example(
         "Display", "draw_checkerboard", "Draw Checkerboard",

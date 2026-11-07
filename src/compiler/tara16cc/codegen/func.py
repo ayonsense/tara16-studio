@@ -512,7 +512,11 @@ class FuncMixin:
         has_raw = any(it.kind == 'raw' for it in self.items[self.body_start:self.body_end])
 
         # --- real passes
-        if live:
+        if has_raw:
+            # Raw assembly has no clobber list. Keep every C variable in
+            # memory so arbitrary R0-R6 writes cannot silently corrupt it.
+            self.allocate_registers(fn, leaf, True)
+        elif live:
             self.allocate_live(fn, leaf)
         else:
             self.allocate_registers(fn, leaf, False)
