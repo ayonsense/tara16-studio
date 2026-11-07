@@ -8,9 +8,10 @@ Classes:
 """
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
-    QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout,
+    QFrame, QGraphicsDropShadowEffect, QGridLayout, QGroupBox, QHBoxLayout,
+    QLabel, QPushButton, QSizePolicy, QVBoxLayout,
 )
 
 from src.ui.assets import _panel_title
@@ -54,31 +55,40 @@ class RegisterPanel(QGroupBox):
         for i in range(8):
             card = QFrame()
             card.setObjectName("reg_card")
-            card.setMinimumHeight(max(66, self._font_size * 3))
+            card.setMinimumHeight(58)
             card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             card.setToolTip(f"{REG_NAMES[i]} value")
             card.setStyleSheet(self._card_style(i, changed=False))
+            shadow = QGraphicsDropShadowEffect(card)
+            shadow.setBlurRadius(14)
+            shadow.setOffset(0, 2)
+            shadow.setColor(QColor(78, 16, 25, 31))
+            card.setGraphicsEffect(shadow)
 
             card_lay = QVBoxLayout(card)
-            card_lay.setContentsMargins(8, 6, 8, 6)
-            card_lay.setSpacing(3)
+            card_lay.setContentsMargins(8, 5, 8, 5)
+            card_lay.setSpacing(2)
 
             top = QHBoxLayout()
             top.setContentsMargins(0, 0, 0, 0)
-            top.setSpacing(5)
+            top.setSpacing(8)
 
             name = QLabel(REG_NAMES[i])
-            name.setFont(QFont('Segoe UI', 8, weight=800))
-            name.setStyleSheet(f"color:{REG_ACCENTS[i]};background:transparent;")
+            name.setObjectName("reg_badge")
+            name.setFixedSize(28, 28)
+            name.setAlignment(Qt.AlignCenter)
+            name.setStyleSheet(
+                f"color:#FFFFFF; background-color:{REG_ACCENTS[i]};"
+                "border-radius:14px;"
+            )
             top.addWidget(name)
-
-            top.addStretch()
-            card_lay.addLayout(top)
 
             hex_v = QLabel('0x0000')
             hex_v.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             hex_v.setStyleSheet(f"color:{C['text']};background:transparent;")
-            card_lay.addWidget(hex_v)
+            top.addWidget(hex_v)
+            top.addStretch()
+            card_lay.addLayout(top)
 
             dec_v = QLabel('u=0  s=0')
             dec_v.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -115,18 +125,20 @@ class RegisterPanel(QGroupBox):
             self.setMinimumHeight(38)
             self.setMaximumHeight(38)
         else:
-            self.setMinimumHeight(max(190, self._font_size * 10))
-            self.setMaximumHeight(max(220, self._font_size * 11))
+            dec_size = max(14, min(19, self._font_size - 5))
+            card_height = max(58, 28 + 2 + dec_size + 10)
+            expanded_height = 2 * card_height + 7 + 26 + 12
+            self.setMinimumHeight(expanded_height)
+            self.setMaximumHeight(expanded_height + 12)
 
     def _apply_font_size(self):
-        name_size = max(18, self._font_size - 8)
-        hex_size = max(20, self._font_size)
-        dec_size = max(18, self._font_size - 2)
+        hex_size = max(16, min(22, self._font_size - 3))
+        dec_size = max(14, min(19, self._font_size - 5))
         self._apply_height_limits()
         for card, name, hex_v, dec_v in self.rows:
-            card.setMinimumHeight(max(66, self._font_size * 3))
-            name_font = QFont('Segoe UI')
-            name_font.setPixelSize(name_size)
+            card.setMinimumHeight(max(58, 28 + 2 + dec_size + 10))
+            name_font = QFont('Helvetica Neue')
+            name_font.setPixelSize(12)
             name_font.setWeight(800)
             hex_font = QFont('Menlo')
             hex_font.setStyleHint(QFont.Monospace)
@@ -139,11 +151,6 @@ class RegisterPanel(QGroupBox):
             name.setFont(name_font)
             hex_v.setFont(hex_font)
             dec_v.setFont(dec_font)
-            reg_index = REG_NAMES.index(name.text())
-            name.setStyleSheet(
-                f"color:{REG_ACCENTS[reg_index]};background:transparent;"
-                f"font-size:{name_size}px;font-weight:800;"
-            )
             hex_v.setStyleSheet(
                 f"color:{C['text']};background:transparent;"
                 f"font-family:'Menlo', monospace;font-size:{hex_size}px;font-weight:800;"
@@ -173,7 +180,7 @@ class RegisterPanel(QGroupBox):
 
             hex_v.setText(f'0x{v:04X}')
             dec_v.setText(f'u={v}  s={signed}')
-            dec_size = max(18, self._font_size - 2)
+            dec_size = max(14, min(19, self._font_size - 5))
             dec_v.setStyleSheet(
                 f"color:{REG_ACCENTS[i] if changed else C['dim']};"
                 "background:transparent;"
