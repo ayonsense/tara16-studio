@@ -1,4 +1,4 @@
 include README.md LICENSE
-recursive-include src/assets *.png *.jpeg
+recursive-include src/assets *.png *.jpeg *.bit
 recursive-include src/examples/progs *.tara
 recursive-include src/compiler *.py *.md *.c *.h *.s

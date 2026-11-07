@@ -79,13 +79,15 @@ is also available when you do not want to install the desktop application.
 
 ## FPGA support
 
-This repository contains the TARA Studio software only. It does **not** include
-the TARA16 Verilog source or an FPGA bitfile. The FPGA tools assume that a
-TARA16 bitfile has already been loaded on the board. This workflow has been
-tested only with the Digilent Basys 3.
+This repository includes a prebuilt TARA16 FPGA bitfile for the Digilent
+Basys 3. TARA Studio selects the bundled image by default and can configure the
+board through [openFPGALoader](https://trabucayre.github.io/openFPGALoader/), or
+connect to a board on which the bitfile is already loaded. FPGA support has
+been tested only with the Basys 3.
 
-A separate Verilog repository provides the TARA16 softcore CPU hardware source.
-The compiler and emulator in this repository work without FPGA hardware.
+The TARA16 Verilog source is not included here; a separate Verilog repository
+provides the softcore CPU hardware source. The compiler and emulator in this
+repository work without FPGA hardware.
 
 ## Work with the source
 
