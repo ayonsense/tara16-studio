@@ -9,14 +9,20 @@
 ; Display map:
 ;   0x0600-0x07FF  framebuffer
 ;   64x64 pixels, 1 bit per pixel, 8 horizontal pixels per byte
+;   the leftmost pixel of a byte is bit 7; row 0 is at the bottom
 ;
 ; Triangle dimensions used here:
-;   height = 24 pixels
-;   base   = 48 pixels
+;   height = 24 pixels (rows 43 down to 20)
+;   base   = 48 pixels (x = 8..55), centred on the screen
 ;
-; This program writes whole bytes, so every written byte draws an 8-pixel-wide
-; on block. It clears the screen, draws a filled triangle,
-; then halts so the image stays visible.
+; The apex is at the top. Each row is one pixel wider on both sides
+; than the row above it, so the edges are smooth 45-degree lines.
+;
+; A row covers pixels L..R. Only the two edge bytes are partly lit.
+; Every byte between them is 0xFF. TARA can only shift by a constant,
+; so the edge masks grow by one bit per row:
+;   left mask:  0x01, 0x03, 0x07, ... 0xFF, then move one byte left
+;   right mask: 0x80, 0xC0, 0xE0, ... 0xFF, then move one byte right
 
 ; ---- Clear framebuffer ---------------------------------------------
         LIL  R0, 0
@@ -34,52 +40,68 @@ clear_loop:
 
 ; ---- Draw filled triangle ------------------------------------------
 ; Registers:
-;   R0 = color byte, 0xFF means eight on pixels
-;   R1 = row index, 0..23
-;   R2 = current row base address
-;   R3 = row width in bytes
-;   R4 = scratch / draw count
+;   R0 = address of the left edge byte
+;   R1 = left edge mask
+;   R2 = address of the right edge byte
+;   R3 = right edge mask
+;   R4 = rows left to draw
 ;   R5 = scratch
 ;   R6 = draw pointer
+;   R7 = 0xFF, a full byte (8 lit pixels)
 
 draw_setup:
-        LIL  R0, 255        ; eight 1-bit pixels, all on
-        LIL  R1, 0          ; row index = 0
-        LIL  R2, 64
-        LIH  R2, 6          ; row base = 0x0640, top y = 8
-        LIL  R3, 1          ; starting width = 1 byte = 8 pixels
+        LIL  R0, 0x5B
+        LIH  R0, 7          ; R0 = 0x075B = 0x0600 + 43*8 + 3, apex pixel x = 31
+        LIL  R1, 0x01       ; x = 31 is the last pixel of its byte
+        LIL  R2, 0x5C
+        LIH  R2, 7          ; R2 = 0x075C, apex pixel x = 32
+        LIL  R3, 0x80       ; x = 32 is the first pixel of its byte
+        LIL  R4, 24         ; 24 rows
+        LIL  R7, 255
 
 row_loop:
-        MOV  R6, R2         ; draw pointer = row base + center - width/2
-        ADDI R6, 4          ; center byte column = 4
-        MOV  R4, R3
-        SHR  R4, 1          ; half width in bytes
-        SUB  R6, R6, R4
+        STB  R1, 0(R0)      ; left edge byte
+        MOV  R6, R0
 
-        MOV  R4, R3         ; draw R3 bytes on this row
-
-draw_row_loop:
-        BZ   R4, row_done
-        STB  R0, 0(R6)
+fill_loop:                  ; full bytes between the two edges
         ADDI R6, 1
+        SUB  R5, R2, R6
+        BZ   R5, right_edge
+        STB  R7, 0(R6)
+        JMP  fill_loop
+
+right_edge:
+        STB  R3, 0(R2)      ; right edge byte
+
         ADDI R4, -1
-        JMP  draw_row_loop
+        BZ   R4, done
 
-row_done:
-        ADDI R2, 8          ; next display row, 8 bytes per 64-pixel row
+        ADDI R0, -8         ; next row down the screen
+        ADDI R2, -8         ; (8 bytes per 64-pixel row)
+
+; Widen the left edge by one pixel.
+        SUB  R5, R1, R7
+        BZ   R5, left_new_byte
+        SHL  R1, 1          ; mask = mask << 1 | 1
         ADDI R1, 1
+        JMP  widen_right
 
-        LIL  R5, 24
-        SUB  R5, R5, R1     ; done after 24 rows
-        BZ   R5, done
+left_new_byte:
+        ADDI R0, -1         ; byte was full: start the byte on its left
+        LIL  R1, 0x01
 
-        LIL  R5, 3
-        AND  R5, R1, R5     ; grow width every four rows
-        BZ   R5, grow_width
+; Widen the right edge by one pixel.
+widen_right:
+        SUB  R5, R3, R7
+        BZ   R5, right_new_byte
+        SHR  R3, 1          ; mask = mask >> 1 | 0x80
+        LIL  R5, 0x80
+        OR   R3, R3, R5
         JMP  row_loop
 
-grow_width:
-        ADDI R3, 1
+right_new_byte:
+        ADDI R2, 1          ; byte was full: start the byte on its right
+        LIL  R3, 0x80
         JMP  row_loop
 
 done:
